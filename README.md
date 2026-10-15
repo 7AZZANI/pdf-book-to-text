@@ -226,12 +226,12 @@ Contributions, bug reports, and suggestions are welcome!
 
 ## 📄 License & Commercial Inquiries
 
-Copyright (c) 2026 **Majed Ibrahim Alotaibi (7AZZANI)**.
+Copyright (c) 2026 **AZZANI**.
 
 * **Free Non-Commercial Use**: This software is free for personal use, education, research, and non-commercial open-source projects under the [PolyForm Noncommercial License](LICENSE).
 * **Commercial Use**: Any use in commercial products, proprietary software, SaaS platforms, or for-profit workflows requires a separate commercial license agreement.
 * **Commercial Licensing Inquiries**:
-  * 📧 Email: [majed.alotaibi1011@gmail.com](mailto:majed.alotaibi1011@gmail.com) / [agz97agz97@gmail.com](mailto:agz97agz97@gmail.com)
+  * 📧 Email: [info@7azzani.com](mailto:info@7azzani.com) / [agz97agz97@gmail.com](mailto:agz97agz97@gmail.com)
   * 🐙 GitHub: [@7AZZANI](https://github.com/7AZZANI)
 
 See the full [`LICENSE`](LICENSE) for complete legal terms.

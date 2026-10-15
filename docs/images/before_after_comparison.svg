@@ -38,7 +38,7 @@
       <text x="0" y="230" fill="#f38ba8">• English turned into Chinese:</text>
       <text x="15" y="252" fill="#f38ba8" font-size="13">䅒呃䍉䱁䜠䥕䕄吠⁏呅䥈䅃⁌</text>
       <text x="0" y="282" fill="#f38ba8">• Reversed Arabic Words:</text>
-      <text x="15" y="304" fill="#f38ba8" font-size="13">العتيبي محمد إبراهيم ماجد (Inverted!)</text>
+      <text x="15" y="304" fill="#f38ba8" font-size="13">بايثون بلغة البرمجة (Inverted!)</text>
     </g>
   </g>
 
@@ -65,7 +65,7 @@
       <text x="0" y="230" fill="#a6e3a1">• Clean English (UTF-8 with BOM):</text>
       <text x="15" y="252" fill="#a6e3a1" font-weight="bold">PRACTICAL GUIDE TO ETHICAL HACKING</text>
       <text x="0" y="282" fill="#a6e3a1">• Natural Arabic Reading Order:</text>
-      <text x="15" y="304" fill="#a6e3a1" font-weight="bold">ماجد إبراهيم محمد العتيبي (Correct RTL)</text>
+      <text x="15" y="304" fill="#a6e3a1" font-weight="bold">البرمجة بلغة بايثون (Correct RTL)</text>
     </g>
   </g>
 </svg>

@@ -293,7 +293,8 @@ Line-breaking in printed books splits words across line boundaries with hyphens 
 
 ## License & Commercial Inquiries
 
-Copyright (c) 2026 **Majed Ibrahim Alotaibi (7AZZANI)**.
-* Free for personal, academic, and non-commercial open-source use.
-* For commercial licensing or enterprise use, contact `majed.alotaibi1011@gmail.com` / `agz97agz97@gmail.com`.
+Copyright (c) 2026 **AZZANI**.
+* Free for personal, academic, and non-commercial open-source use under the [PolyForm Noncommercial License](LICENSE).
+* For commercial licensing or enterprise use, contact `info@7azzani.com` / `agz97agz97@gmail.com`.
+* Official GitHub: [https://github.com/7AZZANI](https://github.com/7AZZANI)
 * See the full [`LICENSE`](LICENSE) for complete terms.
