@@ -1,0 +1,6 @@
+# PDF Book to Text Extractor
+# Required dependencies for running pdf_book_to_text.py
+# Install with: pip install -r requirements.txt
+
+# PyMuPDF: High-performance PDF parser, layout inspector, and text extractor
+pymupdf>=1.24.0,<2.0.0

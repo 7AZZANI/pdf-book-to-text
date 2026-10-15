@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520" width="900" height="520" style="background:#0f111a; border-radius:12px; font-family:'Fira Code', 'JetBrains Mono', Consolas, monospace;">
+  <defs>
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.6"/>
+    </filter>
+  </defs>
+
+  <!-- Window Container -->
+  <rect x="20" y="20" width="860" height="480" rx="10" fill="#181825" stroke="#313244" stroke-width="1.5" filter="url(#shadow)"/>
+
+  <!-- Titlebar -->
+  <path d="M 20 30 Q 20 20 30 20 L 870 20 Q 880 20 880 30 L 880 62 L 20 62 Z" fill="#11111b"/>
+  <circle cx="45" cy="41" r="6" fill="#f38ba8"/>
+  <circle cx="65" cy="41" r="6" fill="#f9e2af"/>
+  <circle cx="85" cy="41" r="6" fill="#a6e3a1"/>
+  <text x="450" y="46" font-size="13" fill="#6c7086" text-anchor="middle" font-weight="bold">terminal — pdf-book-to-text</text>
+
+  <!-- Terminal Content -->
+  <g transform="translate(45, 95)" font-size="14" line-height="22">
+    <!-- Prompt & Command -->
+    <text x="0" y="0">
+      <tspan fill="#a6e3a1" font-weight="bold">user@linux</tspan><tspan fill="#6c7086">:</tspan><tspan fill="#89b4fa" font-weight="bold">~/books</tspan><tspan fill="#cdd6f4">$ python3 pdf_book_to_text.py "Python_Security.pdf"</tspan>
+    </text>
+
+    <!-- Reading Progress -->
+    <text x="0" y="36" fill="#fab387">📖  Reading &amp; Analyzing: Python_Security.pdf</text>
+    <text x="0" y="66" fill="#6c7086">    Scanning fonts, bookmarks, page coordinates, and code listings...</text>
+
+    <!-- Progress bar -->
+    <text x="0" y="96" fill="#89b4fa">[========================================] 100%</text>
+    <text x="460" y="96" fill="#a6adc8">(171/171 pages in 3.8s)</text>
+
+    <!-- Success Stats Box -->
+    <rect x="0" y="125" width="810" height="100" rx="6" fill="#1e1e2e" stroke="#45475a" stroke-width="1"/>
+    <text x="20" y="153" fill="#a6e3a1" font-weight="bold">✓ Extraction Successful: Python_Security.txt</text>
+    <text x="20" y="180" fill="#cdd6f4">• <tspan fill="#89dceb">171</tspan> Pages processed     • <tspan fill="#89dceb">108</tspan> Headings detected (from PDF bookmarks)</text>
+    <text x="20" y="205" fill="#cdd6f4">• <tspan fill="#89dceb">135</tspan> Code blocks parsed  • <tspan fill="#89dceb">244,881</tspan> Characters cleanly formatted</text>
+
+    <!-- Output preview snippet -->
+    <text x="0" y="255" fill="#f9e2af" font-weight="bold">📄 Extracted Output Preview (Python_Security.txt):</text>
+    <rect x="0" y="270" width="810" height="115" rx="6" fill="#11111b" stroke="#313244" stroke-width="1"/>
+    <text x="20" y="296" fill="#cdd6f4">========================================================================</text>
+    <text x="20" y="316" fill="#89b4fa" font-weight="bold">CHAPTER 1: TCP REVERSE SHELL ARCHITECTURE</text>
+    <text x="20" y="336" fill="#cdd6f4">========================================================================</text>
+    <text x="20" y="362" fill="#a6e3a1">```python</text>
+    <text x="20" y="380" fill="#fab387">def connect():</text>
+  </g>
+</svg>

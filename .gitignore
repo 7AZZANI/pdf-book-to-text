@@ -1,0 +1,30 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Operating System files
+.DS_Store
+Thumbs.db
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local extracted text outputs and test PDFs (prevent committing large binaries)
+*.pdf
+*.txt
+*_chapters/
+!requirements.txt
+
+# Scratch and temporary directories
+scratch/
+tmp/

@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520" width="900" height="520" style="background:#0f111a; border-radius:12px; font-family:'Fira Code', 'JetBrains Mono', Consolas, monospace;">
+  <defs>
+    <filter id="shadow2" x="-5%" y="-5%" width="110%" height="110%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.6"/>
+    </filter>
+  </defs>
+
+  <!-- Window Container -->
+  <rect x="20" y="20" width="860" height="480" rx="10" fill="#181825" stroke="#313244" stroke-width="1.5" filter="url(#shadow2)"/>
+
+  <!-- Titlebar -->
+  <path d="M 20 30 Q 20 20 30 20 L 870 20 Q 880 20 880 30 L 880 62 L 20 62 Z" fill="#11111b"/>
+  <circle cx="45" cy="41" r="6" fill="#f38ba8"/>
+  <circle cx="65" cy="41" r="6" fill="#f9e2af"/>
+  <circle cx="85" cy="41" r="6" fill="#a6e3a1"/>
+  <text x="450" y="46" font-size="13" fill="#6c7086" text-anchor="middle" font-weight="bold">terminal — chapter splitting workflow</text>
+
+  <!-- Terminal Content -->
+  <g transform="translate(45, 95)" font-size="14">
+    <!-- Command -->
+    <text x="0" y="0">
+      <tspan fill="#a6e3a1" font-weight="bold">user@linux</tspan><tspan fill="#6c7086">:</tspan><tspan fill="#89b4fa" font-weight="bold">~/books</tspan><tspan fill="#cdd6f4">$ python3 pdf_book_to_text.py book.pdf </tspan><tspan fill="#fab387" font-weight="bold">--split-chapters</tspan>
+    </text>
+
+    <!-- Success Message -->
+    <text x="0" y="32" fill="#a6e3a1">✓ Saved full text : book.txt</text>
+    <text x="0" y="58" fill="#a6e3a1">✓ Chapters folder : book_chapters/ (12 individual chapter files created)</text>
+
+    <!-- Tree View Box -->
+    <rect x="0" y="80" width="810" height="280" rx="6" fill="#11111b" stroke="#313244" stroke-width="1"/>
+    
+    <text x="25" y="112" fill="#89b4fa" font-weight="bold">📁 book_chapters/</text>
+    <text x="25" y="137" fill="#6c7086">├── <tspan fill="#cdd6f4">00 - Front Matter.txt</tspan>                 <tspan fill="#585b70">(Copyright, Credits, Dedication)</tspan></text>
+    <text x="25" y="162" fill="#6c7086">├── <tspan fill="#cdd6f4">01 - Preface.txt</tspan>                      <tspan fill="#585b70">(Book prerequisites, conventions)</tspan></text>
+    <text x="25" y="187" fill="#6c7086">├── <tspan fill="#a6e3a1" font-weight="bold">02 - Chapter 1: TCP Reverse Shell.txt</tspan> <tspan fill="#585b70">(Complete chapter with code listings)</tspan></text>
+    <text x="25" y="212" fill="#6c7086">├── <tspan fill="#cdd6f4">03 - Chapter 2: HTTP Data Exfiltration.txt</tspan></text>
+    <text x="25" y="237" fill="#6c7086">├── <tspan fill="#cdd6f4">04 - Chapter 3: Dynamic DNS Client.txt</tspan></text>
+    <text x="25" y="262" fill="#6c7086">├── <tspan fill="#cdd6f4">05 - Chapter 4: Password Sniffing.txt</tspan></text>
+    <text x="25" y="287" fill="#6c7086">└── <tspan fill="#cdd6f4">06 - Appendix: Tool Reference.txt</tspan></text>
+    
+    <!-- Integration badges inside box -->
+    <g transform="translate(25, 315)">
+      <rect x="0" y="0" width="130" height="26" rx="4" fill="#313244"/>
+      <text x="65" y="17" fill="#cdd6f4" font-size="11" text-anchor="middle">Obsidian Ready</text>
+
+      <rect x="145" y="0" width="130" height="26" rx="4" fill="#313244"/>
+      <text x="210" y="17" fill="#cdd6f4" font-size="11" text-anchor="middle">Notion Drag &amp; Drop</text>
+
+      <rect x="290" y="0" width="130" height="26" rx="4" fill="#313244"/>
+      <text x="355" y="17" fill="#cdd6f4" font-size="11" text-anchor="middle">RAG / LLM Chunking</text>
+
+      <rect x="435" y="0" width="130" height="26" rx="4" fill="#313244"/>
+      <text x="500" y="17" fill="#cdd6f4" font-size="11" text-anchor="middle">e-Reader Compatible</text>
+    </g>
+  </g>
+</svg>

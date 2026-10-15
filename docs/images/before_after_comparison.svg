@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 540" width="920" height="540" style="background:#0f111a; border-radius:12px; font-family:'Fira Code', 'JetBrains Mono', Consolas, monospace;">
+  <defs>
+    <filter id="shadow3" x="-5%" y="-5%" width="110%" height="110%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.6"/>
+    </filter>
+  </defs>
+
+  <!-- Container -->
+  <rect x="15" y="15" width="890" height="510" rx="10" fill="#181825" stroke="#313244" stroke-width="1.5" filter="url(#shadow3)"/>
+
+  <!-- Header Banner -->
+  <path d="M 15 25 Q 15 15 25 15 L 895 15 Q 905 15 905 25 L 905 60 L 15 60 Z" fill="#11111b"/>
+  <circle cx="40" cy="38" r="6" fill="#f38ba8"/>
+  <circle cx="60" cy="38" r="6" fill="#f9e2af"/>
+  <circle cx="80" cy="38" r="6" fill="#a6e3a1"/>
+  <text x="460" y="43" font-size="14" fill="#cdd6f4" text-anchor="middle" font-weight="bold">Quality Comparison: Standard Extractors vs. pdf_book_to_text.py</text>
+
+  <!-- LEFT: Other Tools (Fails) -->
+  <g transform="translate(35, 80)">
+    <rect x="0" y="0" width="410" height="420" rx="8" fill="#1e1e2e" stroke="#f38ba8" stroke-width="1.5"/>
+    <rect x="0" y="0" width="410" height="38" rx="8" fill="#311e2b"/>
+    <text x="15" y="24" fill="#f38ba8" font-size="13" font-weight="bold">❌ Naive Tools (pdftotext / pypdf)</text>
+
+    <g transform="translate(15, 60)" font-size="12" fill="#bac2de">
+      <text x="0" y="0" fill="#f38ba8"># Broken indentation &amp; syntax errors:</text>
+      <text x="0" y="24" fill="#e06c75">def parse_response(packet):</text>
+      <text x="0" y="44" fill="#e06c75">data = packet[“payload”]</text>
+      <text x="0" y="64" fill="#f38ba8" font-weight="bold">CHAPTER 3: NETWORKING 45</text>
+      <text x="0" y="72" fill="#585b70">────────────────────────────────────────</text>
+      <text x="0" y="90" fill="#f38ba8">&lt;-- [Header injected inside function!]</text>
+      <text x="0" y="114" fill="#e06c75">if data.startswith(‘GET’):</text>
+      <text x="0" y="134" fill="#e06c75">return True</text>
+      <text x="0" y="154" fill="#e06c75">return False</text>
+
+      <line x1="0" y1="180" x2="380" y2="180" stroke="#45475a"/>
+
+      <text x="0" y="205" fill="#f38ba8"># Corrupt encoding &amp; reversed Arabic:</text>
+      <text x="0" y="230" fill="#f38ba8">• English turned into Chinese:</text>
+      <text x="15" y="252" fill="#f38ba8" font-size="13">䅒呃䍉䱁䜠䥕䕄吠⁏呅䥈䅃⁌</text>
+      <text x="0" y="282" fill="#f38ba8">• Reversed Arabic Words:</text>
+      <text x="15" y="304" fill="#f38ba8" font-size="13">العتيبي محمد إبراهيم ماجد (Inverted!)</text>
+    </g>
+  </g>
+
+  <!-- RIGHT: pdf_book_to_text.py (Success) -->
+  <g transform="translate(475, 80)">
+    <rect x="0" y="0" width="410" height="420" rx="8" fill="#1e1e2e" stroke="#a6e3a1" stroke-width="1.5"/>
+    <rect x="0" y="0" width="410" height="38" rx="8" fill="#183028"/>
+    <text x="15" y="24" fill="#a6e3a1" font-size="13" font-weight="bold">✅ pdf_book_to_text.py</text>
+
+    <g transform="translate(15, 60)" font-size="12" fill="#bac2de">
+      <text x="0" y="0" fill="#a6e3a1"># Clean 4-space indent &amp; valid ASCII quotes:</text>
+      <text x="0" y="24" fill="#89dceb">```python</text>
+      <text x="0" y="44" fill="#cdd6f4">def parse_response(packet):</text>
+      <text x="0" y="64" fill="#cdd6f4">    data = packet["payload"]</text>
+      <text x="0" y="84" fill="#a6e3a1">    # Header automatically stripped ✓</text>
+      <text x="0" y="104" fill="#cdd6f4">    if data.startswith("GET"):</text>
+      <text x="0" y="124" fill="#cdd6f4">        return True</text>
+      <text x="0" y="144" fill="#cdd6f4">    return False</text>
+      <text x="0" y="164" fill="#89dceb">```</text>
+
+      <line x1="0" y1="180" x2="380" y2="180" stroke="#45475a"/>
+
+      <text x="0" y="205" fill="#a6e3a1"># Full Multilingual &amp; RTL Support:</text>
+      <text x="0" y="230" fill="#a6e3a1">• Clean English (UTF-8 with BOM):</text>
+      <text x="15" y="252" fill="#a6e3a1" font-weight="bold">PRACTICAL GUIDE TO ETHICAL HACKING</text>
+      <text x="0" y="282" fill="#a6e3a1">• Natural Arabic Reading Order:</text>
+      <text x="15" y="304" fill="#a6e3a1" font-weight="bold">ماجد إبراهيم محمد العتيبي (Correct RTL)</text>
+    </g>
+  </g>
+</svg>
