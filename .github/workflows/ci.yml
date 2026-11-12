@@ -30,4 +30,9 @@ jobs:
 
     - name: Run pytest
       run: |
-        pytest tests/test_extractor.py -v
+        pytest -v
+
+    - name: Verify CLI entry points
+      run: |
+        pdf-book-to-text --version
+        python pdf_book_to_text.py --version

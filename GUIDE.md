@@ -1,6 +1,6 @@
 # Complete User & Developer Guide
 
-This guide provides in-depth instructions, advanced recipes, programmatic Python integration, and technical explanations for [`pdf-book-to-text`](pdf_book_to_text.py) v2.0.
+This guide provides in-depth instructions, advanced recipes, programmatic Python integration, and technical explanations for [`pdf-book-to-text`](pdf_book_to_text.py) (`pdf_extractor/` v2.1).
 
 ---
 
@@ -99,22 +99,27 @@ pdf-book-to-text book.pdf --format md -o book.md
 * Box-drawing characters (`├──`, `└──`) and HTML entities (`&lt;div&gt;`) are preserved intact.
 
 ### RAG JSONL Chunks (`--format jsonl`)
-Produces a stream of JSON records with full hierarchy and token counts:
+Produces a clean UTF-8 (no BOM) stream of JSON records with chapter hierarchy, `section_path`, `page`, and `page_index`:
 ```bash
+# Per-element structured records
 pdf-book-to-text book.pdf --format jsonl -o book.jsonl
+
+# Or bundle blocks into ~500-token chunks with 40-word section-scoped overlap
+pdf-book-to-text book.pdf --format jsonl --chunk-tokens 500 --chunk-overlap 40 -o chunks.jsonl
 ```
-Each line contains:
+Each element record contains:
 ```json
 {
-  "id": "book_00042",
-  "book": "Python for Offensive PenTest",
   "type": "code",
   "language": "python",
   "text": "import socket\ns = socket.socket()",
+  "id": 42,
+  "page": "19",
+  "page_index": 29,
   "chapter": "Chapter 1: Network Reconnaissance",
-  "section": "1.2 TCP Sockets",
-  "char_count": 35,
-  "token_estimate": 7
+  "section_path": ["Chapter 1: Network Reconnaissance", "1.2 TCP Sockets"],
+  "book": "Python for Offensive PenTest",
+  "source": "book.pdf"
 }
 ```
 
@@ -135,7 +140,7 @@ pdf-book-to-text book.pdf --format md --split-chapters
 Outputs into `<book>_chapters/`:
 ```text
 book_chapters/
-  ├── 00_frontmatter.md
+  ├── 00_front_matter.md
   ├── 01_preface.md
   ├── 02_chapter_1_the_way_of_the_program.md
   ├── 03_chapter_2_variables_and_expressions.md
@@ -150,10 +155,13 @@ book_chapters/
   pdf-book-to-text two_column_manual.pdf --columns 2
   ```
 
-### Tables & Footnotes
-* `--tables`: Detects ruled tables and formats them as bordered ASCII or Markdown tables.
-* `--footnotes section`: Collects small notes from the bottom of pages and relocates them to the end of sections.
-* `--footnotes drop`: Strips footnotes if you only want uninterrupted body text.
+### Tables, Figures, Callouts & Footnotes
+* `--tables`: Detects ruled tables (while protecting boxed monospace code) and formats them as bordered ASCII or GFM Markdown tables with captions.
+* `--figures`: Clusters composite raster tiles into unified figure entries and attaches nearby captions.
+* `--no-callouts`: Disables automatic vector callout-box detection (`NOTE`, `WARNING`, `TIP` rendered as GitHub `[!NOTE]` alerts in Markdown).
+* `--footnotes section`: Isolates bottom-of-page footnotes (including continuation lines) and scopes them cleanly to section/chapter ends.
+* `--footnotes inline`: Expands footnotes in place (TXT) or emits immediate `[^pX-Y]: ...` definitions right below referencing paragraphs (MD).
+* `--footnotes drop`: Removes bottom-of-page footnotes and inline markers cleanly.
 
 ### Scanned Books & OCR
 ```bash
@@ -173,26 +181,27 @@ from pdf_book_to_text import BookExtractor, Options, split_by_chapters
 
 # Configure extraction settings
 opts = Options(
-    format="md",            # "txt", "md", or "jsonl"
-    width=100,              # Wrap width (0 for no wrapping)
-    detect_lang=True,       # Auto-detect language for code blocks
-    strip_line_numbers=True,# Strip leading listing line numbers
-    footnotes="section",    # "section", "inline", or "drop"
-    quiet=False             # Show progress
+    format="md",             # "txt", "md", or "jsonl"
+    width=100,               # Wrap width (0 for no wrapping)
+    detect_lang=True,        # Auto-detect language for code blocks
+    strip_line_numbers=True, # Strip consecutive printed line numbers
+    callouts=True,           # Detect vector callout boxes
+    footnotes="section",     # "section", "inline", or "drop"
+    quiet=False              # Show progress
 )
 
-# Initialize and run extractor
-extractor = BookExtractor(Path("my_book.pdf"), opts)
-elements = extractor.run()
+# Initialize and run extractor safely via context manager
+with BookExtractor(Path("my_book.pdf"), opts) as extractor:
+    elements = extractor.run()
 
-# Render complete document
-output_text = extractor.render(elements)
-print(f"Rendered {len(output_text):,} characters")
+    # Render complete document
+    output_text = extractor.render(elements)
+    print(f"Rendered {len(output_text):,} characters")
 
-# Access individual chapters programmatically
-for chapter_slug, chapter_elements in split_by_chapters(extractor, elements):
-    chapter_text = extractor.render(chapter_elements, include_header=False)
-    print(f"Chapter: {chapter_slug} ({len(chapter_text):,} chars)")
+    # Access individual chapters programmatically
+    for chapter_slug, chapter_elements in split_by_chapters(extractor, elements):
+        chapter_text = extractor.render(chapter_elements, include_header=False)
+        print(f"Chapter: {chapter_slug} ({len(chapter_text):,} chars)")
 ```
 
 ---
@@ -207,26 +216,30 @@ import json
 from pdf_book_to_text import BookExtractor, Options
 from langchain_core.documents import Document
 
-def load_pdf_book_rag(pdf_path: str) -> list[Document]:
-    # Extract directly to JSONL RAG chunks
-    opts = Options(format="jsonl", quiet=True)
-    extractor = BookExtractor(Path(pdf_path), opts)
-    elements = extractor.run()
-    jsonl_output = extractor.render_jsonl(elements)
+def load_pdf_book_rag(pdf_path: str, chunk_tokens: int = 500) -> list[Document]:
+    # Extract hierarchy-aware JSONL RAG chunks
+    opts = Options(format="jsonl", chunk_tokens=chunk_tokens, chunk_overlap=40, quiet=True)
+    with BookExtractor(Path(pdf_path), opts) as extractor:
+        elements = extractor.run()
+        jsonl_output = extractor.render_jsonl(elements)
 
     docs = []
     for line in jsonl_output.strip().splitlines():
         if not line.strip():
             continue
         record = json.loads(line)
+        if record.get("type") == "document":
+            continue
         docs.append(Document(
             page_content=record["text"],
             metadata={
-                "source": pdf_path,
-                "book": record["book"],
+                "source": record.get("source", pdf_path),
+                "book": record.get("book", ""),
                 "type": record["type"],
                 "chapter": record.get("chapter", ""),
-                "section": record.get("section", ""),
+                "section_path": record.get("section_path", []),
+                "page": record.get("page", ""),
+                "page_index": record.get("page_index", record.get("page_index_start", 1)),
                 "language": record.get("language", ""),
             }
         ))

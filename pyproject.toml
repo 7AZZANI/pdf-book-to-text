@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pdf-book-to-text"
-version = "2.0.0"
+version = "2.1.0"
 description = "Extract clean, structured text, Markdown, and RAG chunks from PDF books with pristine code formatting."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -47,3 +47,7 @@ Issues = "https://github.com/7AZZANI/pdf-book-to-text/issues"
 
 [project.scripts]
 pdf-book-to-text = "pdf_book_to_text:main"
+
+[tool.setuptools]
+packages = ["pdf_extractor"]
+py-modules = ["pdf_book_to_text"]

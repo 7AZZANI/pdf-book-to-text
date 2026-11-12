@@ -1,8 +1,8 @@
 <div align="center">
 
-# 📖 PDF Book to Text Extractor v2.0
+# 📖 PDF Book to Text Extractor v2.1
 
-**Extract clean, publication-grade Plain Text, GitHub Markdown, and RAG JSONL chunks from PDF books — specially tuned for programming and technical literature.**
+**Extract clean, publication-grade Plain Text, GitHub Markdown, and hierarchy-aware RAG JSONL chunks from PDF books — engineered for programming, technical, and multilingual RTL literature.**
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg?style=flat-square)](https://www.python.org/downloads/)
 [![License: Non-Commercial / Dual](https://img.shields.io/badge/License-Non--Commercial%20%2F%20Dual-orange.svg?style=flat-square)](LICENSE)
@@ -40,7 +40,7 @@ Chapter 3. Functions 19
 print(‘Total cost:’, calculate_wholesale(60))
 ```
 
-### ✅ `pdf-book-to-text` Output (v2.0):
+### ✅ `pdf-book-to-text` Output (v2.1):
 ```python
 # - Automatic language-tagged code block (```python)
 # - Exact 4-space indentation and alignment preserved
@@ -61,20 +61,20 @@ print('Total cost:', calculate_wholesale(60))
 ## ✨ Features
 
 * **Multi-Format Export**:
-  * **Plain Text (`.txt`)**: Underlined chapter headings (`====`, `----`, `~~~~`), preserved indentation, and ASCII tables.
-  * **GitHub Markdown (`.md`)**: Proper `#` heading hierarchy, fenced code blocks with detected language tags (```` ```python ````, ```` ```bash ````, ```` ```sql ````), and GFM tables.
-  * **RAG JSONL (`.jsonl`)**: Structured chunk stream with book metadata, chapter/section hierarchy, page numbers, element types, and token estimates ready for vector databases (Chroma, Qdrant, Milvus, LangChain, LlamaIndex).
-* **Authoritative Chapter Hierarchy**: Uses PDF bookmarks (Table of Contents) as ground truth, retaining printed section numbering (`3.1 Function calls`, `3.2 Math functions`) that typical outline parsers drop.
-* **Dual-Tier Monospace & Code Detection**:
-  * Regex matching for popular monospace families (`Courier`, `Consolas`, `JetBrains Mono`, `Fira Code`, `M+`, `DejaVu`, etc.).
-  * **Mathematical character-metric analysis**: Measures Latin glyph width variance. If character advances are uniform across diverse letters (`'i'` vs `'m'`), it is classified as code—detecting custom/renamed fonts with 100% accuracy.
-  * **Proportional Font Code Detection**: Detects code snippets even when printed in proportional body fonts (e.g. 13pt Garamond in *Python Hacking Essentials*) using statistical style-frequency profiling and syntax pattern scoring.
-* **Code Listing Line Number Stripping**: Automatically detects and strips printed listing line numbers (`1  import os`) while preserving code indentation.
-* **Clean Text & Box-Drawing Integrity**: Preserves box-drawing tree characters (`├──`, `└──`, `│`, `─` U+2500) and HTML entities (`&lt;div&gt;`) without corruption.
-* **Full Multilingual & Arabic (RTL) Support**: Native Right-to-Left (RTL) reading order, correct BiDi span sorting, proper sentence punctuation placement, connected Arabic letter preservation, and Unicode NFKC outline matching for Arabic, Hebrew, Urdu, and Cyrillic.
-* **Margin Band Header/Footer Removal**: Detects recurring top and bottom margin coordinates across hundreds of pages, removing page numbers and alternating chapter headers without losing text.
-* **Footnote Relocation**: Identifies small bottom-of-page notes and relocates them to section ends, preventing them from corrupting sentence reflow across page boundaries.
-* **High Performance Parallel Batch**: Multi-core extraction (`-j N`) with `--skip-existing` caching for processing large libraries.
+  * **Plain Text (`.txt`)**: Underlined chapter headings (`====`, `----`, `~~~~`), preserved indentation, callout tags (`[NOTE]`), and bordered ASCII tables.
+  * **GitHub Markdown (`.md`)**: Proper `#` heading hierarchy, fenced code blocks with detected language tags (```` ```python ````, ```` ```bash ````, ```` ```sql ````, ```` ```yaml ````), GitHub `[!NOTE]`/`[!WARNING]` alerts for callout boxes, and GFM tables with captions.
+  * **RAG JSONL (`.jsonl`)**: Structured records AND optional semantic `--chunk-tokens` / `--chunk-overlap` bundles with book metadata, `section_path` breadcrumbs, printed `page`, `page_index`, structured table `rows`, captions, callouts, and footnotes ready for vector databases (Chroma, Qdrant, Milvus, LangChain, LlamaIndex).
+* **Authoritative Chapter Hierarchy**: Uses PDF bookmarks (Table of Contents) with adaptive H1 promotion when cover pages monopolize large display fonts, while retaining printed section numbering (`3.1 Function calls`, `3.2 Math functions`).
+* **Three-Tier Code & Language Detection**:
+  * Regex matching for popular monospace families (`Courier`, `Consolas`, `JetBrains Mono`, `Fira Code`, `M+`, `DejaVu`, etc.) excluding symbol/Type3 fonts.
+  * **Step-by-step monospace advance reconstruction**: Measures real glyph advances to prevent kerning-split spaces inside URLs (`www.packtpub.com`) and code.
+  * **Proportional Font & Syntax Code Detection**: Detects code snippets even in proportional body fonts (keyed by `(font, size)` style tuples and syntax rules including Python REPL `>>>` and YAML vs Python disambiguation).
+* **Code Listing Line Number Stripping & Dropcaps**: Strictly strips consecutive printed listing line numbers (`9  if x:`) without touching spaced constants, and seamlessly rejoins illuminated dropcap letters (`"T"` + `"he"` -> `"The"`).
+* **Vector Callouts, Ruled Tables & Figure Clustering**: Extracts `NOTE`/`WARNING`/`TIP` callout boxes from PDF vector drawings, extracts GFM/ASCII tables while protecting boxed code listings from false table capture, and merges multi-tile raster figures with nearby captions.
+* **Clean Text & Box-Drawing Integrity**: Recovers standard ligatures (`fi`, `fl`), keeps box-drawing tree characters (`├──`, `└──`, `│`, `─` U+2500) and HTML entities (`&lt;div&gt;`) intact.
+* **Full Multilingual & Arabic (RTL) Support**: Native Right-to-Left BiDi ordering (excluding digits from strong LTR runs), RTL right-margin paragraph break detection, connected Arabic letter preservation, and Unicode NFKC outline matching.
+* **Margin Band Header/Footer Removal & Scoped Footnotes**: Removes recurring page headers/footers across pages, isolates multi-line footnotes cleanly to section/chapter boundaries (preserving cross-page stitching even with `--page-markers`), and warns explicitly on scanned or PUA-garbled pages.
+* **Modular Architecture & High-Speed Parallel Batch**: Clean [`pdf_extractor/`](pdf_extractor/) package + backwards-compatible [`pdf_book_to_text.py`](pdf_book_to_text.py) CLI/library façade, with multi-core batch conversion (`-j N`) and `--skip-existing` caching.
 
 ---
 
@@ -131,7 +131,7 @@ pdf-book-to-text book.pdf --format md --split-chapters
 ```
 ```text
 book_chapters/
-  ├── 00_frontmatter.md
+  ├── 00_front_matter.md
   ├── 01_preface.md
   ├── 02_chapter_1_network_reconnaissance.md
   ├── 03_chapter_2_socket_programming.md
@@ -139,23 +139,28 @@ book_chapters/
 ```
 
 ### 🤖 Recipe 2: Vector Search & RAG Embeddings (JSONL)
-Extracts structured chunks with chapter path and page metadata:
+Extracts structured records OR hierarchy-aware token-budget chunks (`--chunk-tokens`) with chapter breadcrumbs and page metadata:
 ```bash
+# Per-element structured records
 pdf-book-to-text book.pdf --format jsonl -o knowledge_base.jsonl
+
+# Or bundle elements into ~500-token chunks with 40-word overlap
+pdf-book-to-text book.pdf --format jsonl --chunk-tokens 500 --chunk-overlap 40 -o chunks.jsonl
 ```
 
 Example JSONL record:
 ```json
 {
-  "id": "book_00142",
-  "book": "Python for Offensive PenTest",
   "type": "code",
   "language": "python",
   "text": "import socket\ns = socket.socket(socket.AF_INET, socket.SOCK_STREAM)",
-  "chapter": "Warming up – Your First Shell",
-  "section": "TCP reverse shell",
-  "char_count": 84,
-  "token_estimate": 14
+  "id": 42,
+  "page": "19",
+  "page_index": 29,
+  "chapter": "Warming up - Your First Shell",
+  "section_path": ["Warming up - Your First Shell", "TCP reverse shell"],
+  "book": "Python for Offensive PenTest",
+  "source": "book.pdf"
 }
 ```
 
@@ -189,12 +194,17 @@ pdf-book-to-text scanned_book.pdf --ocr --ocr-lang eng
 | `-j`, `--jobs` | `1` | Number of parallel worker processes for batch extraction. |
 | `--skip-existing` | `False` | Skip files that already have target output. |
 | `-r`, `--recursive` | `False` | Recursively scan folders for `.pdf` files. |
-| `-w`, `--width` | `100` | Paragraph wrap width (`0` = no wrap; code is never wrapped). |
+| `-w`, `--width` | `100` / `0` | Paragraph wrap width (`100` default for `.txt`, `0` unwrapped for `.md`/`.jsonl`; code is never wrapped). |
 | `--code-style` | `fence` | Code block format in plain text: `fence` (```` ``` ````), `indent` (4 spaces), or `plain`. |
+| `--code-lang` | `auto` | Language tag for code fences: `auto` (detect), `none`, or an explicit name like `python`. |
+| `--detect-code` | `auto` | Code detection mode: `auto` (monospace + style + syntax) or `font` (monospace only). |
 | `--no-detect-lang` | `False` | Disable automatic programming language detection for code fences. |
-| `--no-strip-line-numbers` | `False` | Do not strip leading listing line numbers from code blocks. |
-| `--footnotes` | `section` | Footnote handling: `section` (append at end), `inline` (`[^N]`), or `drop`. |
-| `--no-bom` | `False` | Write UTF-8 without BOM (recommended for Unix pipelines). |
+| `--keep-line-numbers` | `False` | Keep leading printed listing line numbers in code blocks instead of stripping them. |
+| `--footnotes` | `section` | Footnote handling: `section` (end of chapter/section), `inline` (expanded in place), or `drop`. |
+| `--no-callouts` | `False` | Disable automatic detection of boxed callout notes (`NOTE`, `WARNING`, `TIP`). |
+| `--chunk-tokens` | `0` | In `--format jsonl`, pack elements into section-scoped RAG chunks targeting N tokens. |
+| `--chunk-overlap` | `0` | Trailing overlap words carried across consecutive `--chunk-tokens` chunks in the same section. |
+| `--no-bom` | `False` | Write `.txt` as plain UTF-8 without BOM (`.md` and `.jsonl` never write a BOM). |
 | `--stdout` | `False` | Output text directly to standard output. |
 | `--split-chapters` | `False` | Also outputs individual files per chapter into `<name>_chapters/`. |
 | `--pages` | *All* | Page range filter (e.g. `1-20`, `35-50,75`). |
@@ -217,13 +227,13 @@ pdf-book-to-text scanned_book.pdf --ocr --ocr-lang eng
 
 ```mermaid
 flowchart TD
-    A["Input PDF File"] --> B["1. Document Profiler\n• Font classification & metrics\n• Whole-book proportional code profiling\n• Margin band coordinates"]
-    B --> C["2. Raw Line Extraction\n• Character bbox clustering\n• BiDi segment reordering (RTL)\n• Arabic letter connection preservation"]
-    C --> D["3. Running Header/Footer Filter\n• Recurring margin-band suppression\n• Footnote isolation & relocation"]
-    D --> E["4. Chapter & Outline Engine\n• Unicode NFKC bookmark alignment\n• Printed section number retention (3.1, 3.2)"]
-    E --> F["5. Code Reconstruction Engine\n• Indentation coordinate reconstruction\n• Language detection (Python, Bash, SQL, C, JS)\n• Strip listing line numbers\n• Cross-page code stitching"]
-    F --> G["6. Paragraph Reflow\n• Book vocabulary builder\n• Soft-hyphen resolution across page breaks"]
-    G --> H["7. Multi-Format Rendering\n• Plain Text (.txt)\n• GitHub Markdown (.md)\n• RAG Chunks (.jsonl)"]
+    A["Input PDF File"] --> B["1. Document Profiler\n• Font metrics (excl. Type3/symbol)\n• (font, size) proportional code profiling\n• Repeating margin-band coordinates"]
+    B --> C["2. Raw Line & Block Extractor\n• Stepwise monospace advance recovery\n• Vector callouts, ruled tables, figure clusters\n• BiDi RTL segment ordering & ligature recovery"]
+    C --> D["3. Running Header/Footer & Footnotes\n• Margin-band header suppression\n• Multi-line footnote isolation & section scoping"]
+    D --> E["4. Chapter & Outline Engine\n• Unicode NFKC bookmark alignment\n• Adaptive H1 promotion past cover displays"]
+    E --> F["5. Code Reconstruction Engine\n• Indent + strict listing number stripping\n• Language detection (Python REPL, YAML, Bash, SQL...)\n• Cross-page Para/Code stitching"]
+    F --> G["6. Paragraph Reflow\n• Vocabulary compound-hyphen resolution\n• Dropcap prepending & RTL margin breaks"]
+    G --> H["7. Multi-Format & RAG Output\n• Plain Text (.txt)\n• GitHub Markdown (.md w/ [!NOTE] alerts)\n• Per-element or Chunked JSONL (.jsonl)"]
 ```
 
 ---
@@ -233,19 +243,17 @@ flowchart TD
 The test suite runs automatically with `pytest`:
 
 ```bash
-pytest tests/test_extractor.py -v
+pytest -v
 ```
 
-Tests cover:
-* Box-drawing character preservation (`├──`, `└──`, `│`, `─` ord 0x2500).
-* HTML entity preservation in code listings (`&lt;div&gt;`).
-* Byte-swap repair on corrupt PDF bookmarks.
-* Multilingual and Arabic Unicode NFKC bookmark matching.
-* Programming language heuristics (Python, Bash, SQL, JSON, C).
-* Code listing line-number stripping.
-* Synthetic in-memory PDF extraction across TXT, MD, and JSONL formats.
-* Arabic BiDi punctuation and letter joining.
-* Footnote extraction and table rendering.
+Tests cover (`tests/test_extractor.py` & `tests/test_regressions_v21.py`):
+* Box-drawing character preservation (`├──`, `└──`, `│`, `─` ord 0x2500) and ligature recovery (`fi`, `fl`).
+* HTML entity preservation in code listings (`&lt;div&gt;`) and monospace advance kerning (`www.packtpub.com`).
+* Dropcaps, multi-line footnotes (`section`, `inline`, `drop`, chapter isolation), and cross-page stitching with `--page-markers`.
+* Vector callout boxes (`> [!NOTE]`), ruled tables (`--tables`) without stealing boxed code, and raster figure clustering (`--figures`).
+* Multilingual Unicode NFKC bookmarks, Arabic RTL BiDi ordering (with Latin digits), and RTL right-margin breaks.
+* Programming language disambiguation (Python vs YAML vs Bash/SQL/JSON, `>>>` REPL), strict sequential listing number stripping, and proportional/syntax fallback.
+* Hierarchy-aware RAG JSONL chunking (`--chunk-tokens` / `--chunk-overlap`), UTF-8 BOM guarantees, CLI `-o` file/dir planning, and context-manager cleanup.
 
 ---
 

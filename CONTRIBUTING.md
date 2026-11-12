@@ -39,12 +39,13 @@ Enhancement ideas are welcome! Please open an issue with:
    ```
 3. **Run tests** and ensure 100% pass:
    ```bash
-   pytest tests/test_extractor.py -v
+   pytest -v
    ```
 4. **Follow conventions**:
+   * Code lives cleanly modularized inside `pdf_extractor/`, re-exported by `pdf_book_to_text.py`.
    * Keep body text sanitization safe (never decode HTML or corrupt Unicode box-drawing characters).
    * Ensure Arabic/RTL BiDi handling remains intact.
-   * Add new unit tests to `tests/test_extractor.py` for any new functionality or bug fix.
+   * Add new unit tests to `tests/` for any new functionality or bug fix.
 5. **Commit your changes**:
    ```bash
    git commit -m "feat(scope): clear description of change"
