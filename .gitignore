@@ -28,3 +28,7 @@ Thumbs.db
 # Scratch and temporary directories
 scratch/
 tmp/
+.pytest_cache/
+*.egg-info/
+build/
+dist/

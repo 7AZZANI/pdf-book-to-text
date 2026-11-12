@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-book-to-text"
+version = "2.0.0"
+description = "Extract clean, structured text, Markdown, and RAG chunks from PDF books with pristine code formatting."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "AZZANI Non-Commercial Dual License" }
+authors = [
+    { name = "AZZANI", email = "info@7azzani.com" }
+]
+keywords = [
+    "pdf", "pdf-extraction", "ebook", "programming-books",
+    "markdown", "rag", "code-extraction", "arabic-pdf", "bidi", "vector-search"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Text Processing :: General",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+dependencies = [
+    "pymupdf>=1.24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/7AZZANI/pdf-book-to-text"
+Repository = "https://github.com/7AZZANI/pdf-book-to-text"
+Issues = "https://github.com/7AZZANI/pdf-book-to-text/issues"
+
+[project.scripts]
+pdf-book-to-text = "pdf_book_to_text:main"

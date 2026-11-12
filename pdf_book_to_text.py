@@ -1,78 +1,122 @@
 #!/usr/bin/env python3
 """
-pdf_book_to_text.py - Extract clean, well-structured plain text from PDF books.
+pdf_book_to_text.py - Extract clean, structured plain text, Markdown, and RAG chunks from PDF books.
 
-Designed especially for PROGRAMMING books:
+Author:  AZZANI (info@7azzani.com / agz97agz97@gmail.com)
+Repo:    https://github.com/7AZZANI/pdf-book-to-text
+License: AZZANI Non-Commercial Dual License (see LICENSE)
 
-  * Chapters / sections are detected from the PDF bookmarks (outline) when
-    available, otherwise from font sizes / bold styling, and rendered as clear
-    text headings (===== / ----- / ~~~~~ underlines).
-  * Code listings are detected by their monospaced font and reproduced with
-    their ORIGINAL INDENTATION and internal alignment (rebuilt from character
-    positions), blank lines inside listings are kept, listings broken across
-    pages are re-joined, and typographic quotes inside code are straightened.
-  * Running headers, footers and page numbers are removed automatically.
-  * Paragraphs are re-flowed (lines joined, hyphenation repaired using a
-    vocabulary built from the book itself), across page breaks too.
-  * Bullet / numbered lists keep their structure.
-  * Two-column layouts are detected and read in the correct order.
-  * Optional: tables as ASCII grids, figure placeholders, page markers,
-    OCR for scanned pages, one file per chapter.
+Designed especially for PROGRAMMING & TECHNICAL books:
+  * Multi-format export: Clean Text (.txt), GitHub Markdown (.md), and RAG JSONL (.jsonl).
+  * True chapter & section hierarchy detected from PDF bookmarks (outline) or font analysis.
+  * Pristine code formatting: Preserves original indentation, aligns character grids,
+    detects programming languages (Python, Bash, C/C++, Java, JS, SQL, JSON), strips listing
+    line numbers, and handles proportional code fonts.
+  * Clean text integrity: Preserves box-drawing trees (├──, └──), HTML entities, math & CJK.
+  * Bidirectional & Multilingual: Native RTL support for Arabic, Hebrew, Urdu, and Farsi with
+    correct BiDi span ordering, punctuation placement, and Unicode NFKC outline matching.
+  * Layout aware: Removes repeating headers/footers, joins hyphenated paragraphs across pages,
+    detects multi-column spreads, ASCII/GFM tables, and isolates footnotes.
+  * Performance: Parallel multi-core batch processing (-j N) with skip-existing caching.
 
 Usage
 -----
-    python pdf_book_to_text.py book.pdf                 # -> book.txt next to the PDF
-    python pdf_book_to_text.py book.pdf -o out.txt
-    python pdf_book_to_text.py ~/Books/ -r              # every PDF in a folder
-    python pdf_book_to_text.py book.pdf --split-chapters --tables
-    python pdf_book_to_text.py                          # asks for the path interactively
-
-Requires:  pip install pymupdf
+    pdf-book-to-text book.pdf                    # -> book.txt
+    pdf-book-to-text book.pdf --format md        # -> book.md (with fenced ```lang blocks)
+    pdf-book-to-text book.pdf --format jsonl     # -> book.jsonl (RAG-ready chunk stream)
+    pdf-book-to-text ~/Books/ -r -j 4            # Parallel batch conversion across folders
 """
 from __future__ import annotations
 
 import argparse
+import collections
+from collections import Counter, defaultdict
+import concurrent.futures
+from dataclasses import dataclass
 import difflib
 import html
+import json
+import math
+import os
+from pathlib import Path
 import re
 import statistics
 import sys
 import textwrap
 import time
 import unicodedata
-from collections import Counter, defaultdict
-from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple, Union
 
 try:
-    import pymupdf  # PyMuPDF >= 1.24
-except ImportError:  # pragma: no cover
+    import pymupdf  # PyMuPDF 1.24+
+except ImportError:
     try:
-        import fitz as pymupdf  # older PyMuPDF
+        import fitz as pymupdf  # Older PyMuPDF alias
     except ImportError:
-        sys.exit("ERROR: PyMuPDF is required.  Install it with:  pip install pymupdf")
+        sys.exit(
+            "Error: PyMuPDF is not installed.\n"
+            "Run: pip install pymupdf"
+        )
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
+__author__ = "AZZANI"
+__email__ = "info@7azzani.com"
 
 # --------------------------------------------------------------------------- #
-#  Constants & regular expressions
+#  Text cleansing & sanitization (Safe for code, box-drawing, and Unicode)
 # --------------------------------------------------------------------------- #
-TEXT_FLAGS = getattr(pymupdf, "TEXT_PRESERVE_WHITESPACE", 2) | getattr(pymupdf, "TEXT_MEDIABOX_CLIP", 64)
+TEXT_FLAGS = pymupdf.TEXTFLAGS_SEARCH | pymupdf.TEXT_PRESERVE_LIGATURES | pymupdf.TEXT_PRESERVE_WHITESPACE
 
-# Regex to detect Right-to-Left scripts (Arabic, Hebrew, Farsi, Urdu, etc.)
+# Regex for Right-to-Left scripts (Arabic, Hebrew, Farsi, Urdu, Syriac, Thaana)
 RTL_RE = re.compile(r"[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufefc]")
+
+# Arabic punctuation and digits
+ARABIC_TERMINAL_RE = re.compile(r"[.!?:;؟،؛][\"'\u201d\u2019)\]]*$")
+ARABIC_DIGITS_TRANS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+
+
+def count_rtl_chars(s: str) -> int:
+    """Return count of Right-to-Left characters in string."""
+    return len(RTL_RE.findall(s))
 
 
 def is_rtl_text(s: str) -> bool:
+    """Return True if string contains RTL characters."""
     return bool(RTL_RE.search(s))
 
 
-def sanitize_text(s: str) -> str:
-    """Strip null bytes, repair byte-swapped UTF-16, unescape HTML entities, and eliminate unprintable control chars.
+def is_predominantly_rtl(s: str) -> bool:
+    """Return True if RTL characters outnumber Latin/LTR letters."""
+    rtl_count = count_rtl_chars(s)
+    ltr_count = len(re.findall(r"[A-Za-z]", s))
+    return rtl_count > ltr_count
 
-    Prevents Windows Notepad / editors from misdetecting English or Arabic text as UTF-16
-    and displaying Chinese/CJK ideographs (Mojibake).
+
+def clean_text(s: str) -> str:
+    """Sanitize document body text safely.
+
+    Strips NUL bytes and ASCII control characters (< 32 except \\t, \\n, \\r).
+    NEVER mutates box-drawing characters (e.g. ─ U+2500), math symbols, CJK ideographs,
+    and NEVER unescapes HTML entities in code listings.
+    """
+    if not s:
+        return ""
+    chars = []
+    for c in s:
+        code = ord(c)
+        if code == 0:
+            continue
+        if code < 32 and code not in (9, 10, 13):
+            continue
+        chars.append(c)
+    return "".join(chars)
+
+
+def repair_metadata(s: str) -> str:
+    """Repair PDF bookmark titles and document metadata.
+
+    Repairs byte-swapped UTF-16 strings (e.g. 0x00 0x50 -> 'P') and unescapes HTML entities.
+    Strictly used for document metadata and outline titles, NEVER on book body text.
     """
     if not s:
         return ""
@@ -83,15 +127,14 @@ def sanitize_text(s: str) -> str:
         code = ord(c)
         if code == 0:
             continue
-        # Repair byte-swapped ASCII characters (e.g. from corrupt PDF bookmarks like 0x5000 -> 'P')
+        # Only repair if byte-swapped ASCII in high byte (e.g., 0x5000 -> 'P')
         if (code & 0xFF) == 0 and 0x20 <= (code >> 8) <= 0x7E:
             chars.append(chr(code >> 8))
-        # Drop non-printable control characters except tab, newline, carriage return
         elif code < 32 and code not in (9, 10, 13):
             continue
         else:
             chars.append(c)
-    return "".join(chars)
+    return clean_ws("".join(chars))
 
 
 # Font names that indicate a monospaced (code) font.
@@ -108,11 +151,10 @@ MONO_FONT_RE = re.compile(
 BOLD_FONT_RE = re.compile(r"bold|black|heavy|semibold|demi|extrab", re.I)
 
 CHAR_MAP = {
-    "\x00": "", "\ufb00": "ff", "\ufb01": "fi", "\ufb02": "fl", "\ufb03": "ffi", "\ufb04": "ffl",
-    "\ufb05": "st", "\ufb06": "st", "\t": " ", "\r": "", "\n": "",
+    "\u00a0": " ", "\u202f": " ", "\u2007": " ", "\u2008": " ", "\u2009": " ",
+    "\u200a": " ", "\u2002": " ", "\u2003": " ", "\u2004": " ", "\u2005": " ",
+    "\u2006": " ", "\u3000": " ",
 }
-for _c in "\u00a0\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u202f\u205f\u3000":
-    CHAR_MAP[_c] = " "
 for _c in "\u200b\u200c\u200d\u2060\ufeff":
     CHAR_MAP[_c] = ""
 for _c in "\uf0b7\uf0a7\uf0d8\uf076\uf0fc\uf0a8\uf06e\uf0e0\uf075\uf0d7\uf09f\uf0a2\u2219\u25cf":
@@ -125,15 +167,26 @@ CODE_TRANS = str.maketrans({
     "\u2212": "-", "\u2010": "-", "\u2011": "-", "\u00ad": "-",
 })
 
-TERMINAL_RE = re.compile(r"[.!?:;][\"'\u201d\u2019)\]]*$")
+TERMINAL_RE = re.compile(r"[.!?:;؟،؛][\"'\u201d\u2019)\]]*$")
 STRONG_BULLET_RE = re.compile(r"^([•○◦▪▫■□►▸‣⁃✓✔➢➤❖◆◇])\s*(?=\S)")
 WEAK_BULLET_RE = re.compile(r"^([-–—*])\s+(?=\S)")
-NUM_LIST_RE = re.compile(r"^(\(?\d{1,3}[.)]|\(?[a-z][.)]|\(?(?:i|ii|iii|iv|v|vi|vii|viii|ix|x)[.)]|\(?[A-Z]\))\s+(?=\S)")
-PAGE_NUM_RE = re.compile(r"^[-–—\s]*(?:page\s*)?(?:\d{1,4}|[ivxlcdm]{1,7})(?:\s*(?:/|of)\s*\d{1,4})?[-–—\s]*$", re.I)
-LABEL_RE = re.compile(r"^(?:chapter|part|appendix|lesson|module|unit|section|book|day|hour|step)?\s*"
-                      r"(?:\d{1,3}|[ivxlcdm]{1,6}|[a-z])[.:]?$", re.I)
-CHAPTER_RE = re.compile(r"^(?:chapter|part|appendix)\s+(?:\d{1,3}|[ivxlcdm]{1,6}|[a-z]|one|two|three|four|"
-                        r"five|six|seven|eight|nine|ten)\b", re.I)
+NUM_LIST_RE = re.compile(
+    r"^(\(?\d{1,3}[.)]|\(?[a-z][.)]|\(?(?:i|ii|iii|iv|v|vi|vii|viii|ix|x)[.)]|\(?[A-Z]\)|\(?[٠-٩]{1,3}[.)])\s+(?=\S)"
+)
+PAGE_NUM_RE = re.compile(
+    r"^[-–—\s]*(?:page\s*)?(?:\d{1,4}|[ivxlcdm]{1,7}|[٠-٩]{1,4})(?:\s*(?:/|of)\s*(?:\d{1,4}|[٠-٩]{1,4}))?[-–—\s]*$",
+    re.I,
+)
+LABEL_RE = re.compile(
+    r"^(?:chapter|part|appendix|lesson|module|unit|section|book|day|hour|step|الفصل|الباب|الجزء)?\s*"
+    r"(?:\d{1,3}|[ivxlcdm]{1,6}|[a-z]|[٠-٩]{1,3})[.:]?$",
+    re.I,
+)
+CHAPTER_RE = re.compile(
+    r"^(?:chapter|part|appendix|الفصل|الباب)\s+(?:\d{1,3}|[ivxlcdm]{1,6}|[a-z]|one|two|three|four|"
+    r"five|six|seven|eight|nine|ten|[٠-٩]{1,3}|الاول|الأول|الثاني|الثالث|الرابع|الخامس)\b",
+    re.I,
+)
 LEADER_RE = re.compile(r"(?:\s*\.){4,}\s*")
 WORD_RE = re.compile(r"[A-Za-z]+(?:-[A-Za-z]+)*")
 
@@ -145,7 +198,7 @@ class Seg:
     """A run of text in one font, with whitespace trimmed and positions kept."""
     __slots__ = ("x0", "x1", "text", "size", "mono", "bold", "cw", "base", "nchars")
 
-    def __init__(self, x0, x1, text, size, mono, bold, cw, base):
+    def __init__(self, x0: float, x1: float, text: str, size: float, mono: bool, bold: bool, cw: float, base: float):
         self.x0, self.x1, self.text, self.size = x0, x1, text, size
         self.mono, self.bold, self.cw, self.base = mono, bold, cw, base
         self.nchars = len(text.replace(" ", ""))
@@ -153,18 +206,61 @@ class Seg:
 
 class Line:
     """A visual line of text (one or more segments on the same baseline)."""
-    __slots__ = ("x0", "y0", "x1", "y1", "segs", "base", "size", "mono_ratio", "bold_ratio",
-                 "cw", "kind", "level", "text", "col", "nchars", "tabular", "block", "dropcap")
+    __slots__ = (
+        "x0", "y0", "x1", "y1", "segs", "base", "size", "mono_ratio", "bold_ratio",
+        "cw", "kind", "level", "text", "col", "nchars", "tabular", "block", "dropcap", "is_rtl"
+    )
 
-    def __init__(self, segs, y0, y1):
-        if any(is_rtl_text(s.text) for s in segs):
-            self.segs = list(segs)
+    def __init__(self, segs: list[Seg], y0: float, y1: float):
+        # BiDi span layout: Check if predominantly RTL
+        rtl_c = sum(count_rtl_chars(s.text) for s in segs)
+        ltr_c = sum(len(re.findall(r"[A-Za-z0-9]", s.text)) for s in segs)
+        self.is_rtl = rtl_c > ltr_c
+
+        if self.is_rtl:
+            # Order segments for visual Right-to-Left reading:
+            # Sort top-level groups right-to-left, but keep Latin words/numbers left-to-right internally.
+            self.segs = self._bidi_sort(segs)
         else:
             self.segs = sorted(segs, key=lambda s: s.x0)
+
         self.y0, self.y1 = y0, y1
         self.kind, self.level, self.text, self.col = "text", 0, "", 0
         self.tabular, self.block, self.dropcap = False, None, False
         self.refresh()
+
+    @staticmethod
+    def _bidi_sort(segs: list[Seg]) -> list[Seg]:
+        """Order segments right-to-left while preserving LTR order within Latin/numeric runs."""
+        sorted_ltr = sorted(segs, key=lambda s: s.x0)
+        groups: list[tuple[bool, list[Seg]]] = []
+        curr_group: list[Seg] = []
+        curr_is_rtl: Optional[bool] = None
+
+        for s in sorted_ltr:
+            s_rtl = is_rtl_text(s.text)
+            if curr_is_rtl is None:
+                curr_is_rtl = s_rtl
+                curr_group = [s]
+            elif s_rtl == curr_is_rtl:
+                curr_group.append(s)
+            else:
+                groups.append((curr_is_rtl, curr_group))
+                curr_group = [s]
+                curr_is_rtl = s_rtl
+        if curr_group:
+            groups.append((curr_is_rtl, curr_group))
+
+        # Sort the runs by descending physical right-edge (rightmost group first)
+        groups.sort(key=lambda g: max(s.x1 for s in g[1]), reverse=True)
+        res = []
+        for is_rtl, grp in groups:
+            if is_rtl:
+                grp.sort(key=lambda s: s.x1, reverse=True)
+            else:
+                grp.sort(key=lambda s: s.x0)
+            res.extend(grp)
+        return res
 
     def refresh(self):
         segs = self.segs
@@ -188,21 +284,20 @@ class Line:
         return " ".join(s.text for s in self.segs)
 
     @property
-    def h(self) -> float:
-        return max(self.y1 - self.y0, 1.0)
-
-    @property
     def yc(self) -> float:
         return (self.y0 + self.y1) / 2
 
+    @property
+    def h(self) -> float:
+        return self.y1 - self.y0
 
-@dataclass
+
 class PageData:
     pno: int
     label: str
     width: float
     height: float
-    lines: list
+    lines: list[Line]
     blocks: list            # (y0, x0, kind, text) for tables / figures
     scanned: bool = False
     garbled: bool = False
@@ -215,14 +310,14 @@ class PageData:
 class Heading:
     __slots__ = ("level", "text", "from_font")
 
-    def __init__(self, level, text, from_font=False):
+    def __init__(self, level: int, text: str, from_font: bool = False):
         self.level, self.text, self.from_font = level, text, from_font
 
 
 class Para:
     __slots__ = ("lines", "marker", "list_level", "marker_x0", "first_x0", "rest_x0")
 
-    def __init__(self, text, marker=None, list_level=0, x0=0.0):
+    def __init__(self, text: str, marker: str = None, list_level: int = 0, x0: float = 0.0):
         self.lines = [text]
         self.marker, self.list_level = marker, list_level
         self.marker_x0 = self.first_x0 = x0
@@ -230,30 +325,39 @@ class Para:
 
 
 class Code:
-    __slots__ = ("lines",)  # [indent_cols, text, blank_lines_before]
+    __slots__ = ("lines", "lang")  # [indent_cols, text, blank_lines_before]
 
-    def __init__(self):
+    def __init__(self, lang: str = ""):
         self.lines = []
+        self.lang = lang
 
 
 class Pre:
     __slots__ = ("lines",)
 
-    def __init__(self, lines):
+    def __init__(self, lines: list[str]):
         self.lines = list(lines)
 
 
 class PageMark:
     __slots__ = ("label",)
 
-    def __init__(self, label):
+    def __init__(self, label: str):
         self.label = label
+
+
+class Footnote:
+    __slots__ = ("marker", "text", "page")
+
+    def __init__(self, marker: str, text: str, page: int):
+        self.marker, self.text, self.page = marker, text, page
 
 
 @dataclass
 class Options:
+    format: str = "txt"              # txt, md, jsonl
     width: int = 100
-    code_style: str = "fence"
+    code_style: str = "fence"        # fence, indent, plain
     pages: str = None
     page_markers: bool = False
     contents: bool = True
@@ -269,43 +373,194 @@ class Options:
     use_bookmarks: bool = True
     fix_code_quotes: bool = True
     mark_inline_code: bool = False
+    detect_lang: bool = True
+    strip_line_numbers: bool = True
+    footnotes: str = "section"       # section, inline, drop
+    no_bom: bool = False
+    stdout: bool = False
+    jobs: int = 1
+    skip_existing: bool = False
     quiet: bool = False
 
 
 # --------------------------------------------------------------------------- #
-#  Small helpers
+#  Utilities & Heuristics
 # --------------------------------------------------------------------------- #
-def pct(sorted_vals, q):
-    if not sorted_vals:
+def percentile(values: Sequence[float], q: float) -> float:
+    if not values:
         return 0.0
+    sorted_vals = sorted(values)
     k = min(len(sorted_vals) - 1, max(0, int(round(q * (len(sorted_vals) - 1)))))
     return sorted_vals[k]
 
 
-def mode_of(values, ndigits=1, default=None):
+def mode_of(values: Sequence[Any], ndigits: int = 1, default: Any = None) -> Any:
     if not values:
         return default
     return Counter(round(v, ndigits) for v in values).most_common(1)[0][0]
 
 
 def norm_key(s: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", s.lower())
+    """Normalize text for robust outline and heading comparison across all scripts."""
+    s_clean = unicodedata.normalize("NFKC", s).casefold()
+    return re.sub(r"[\W_]+", "", s_clean, flags=re.UNICODE)
 
 
 def clean_ws(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def log(msg, opts, end="\n"):
+def log(msg: str, opts: Options, end: str = "\n"):
     if not opts.quiet:
         print(msg, file=sys.stderr, end=end, flush=True)
 
 
 # --------------------------------------------------------------------------- #
+#  Code Language & Line-Number Detection
+# --------------------------------------------------------------------------- #
+def guess_code_language(text: str) -> str:
+    """Guess programming language of code block using syntax heuristics."""
+    if not text.strip():
+        return ""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+
+    stripped = text.strip()
+    if (stripped.startswith("{") and stripped.endswith("}")) or (stripped.startswith("[") and stripped.endswith("]")):
+        try:
+            json.loads(stripped)
+            return "json"
+        except Exception:
+            pass
+
+    if re.search(r"^\s*<(!DOCTYPE|html|head|body|div|p|span|table|form|script|style|xml)\b", text, re.I | re.M):
+        return "html" if "<html" in text.lower() or "<div" in text.lower() else "xml"
+
+    scores = Counter()
+
+    # Python
+    py_patterns = [
+        r"\bdef\s+[a-zA-Z_]\w*\s*\(",
+        r"\bclass\s+[a-zA-Z_]\w*(?:\s*\(.*?\))?:",
+        r"\bimport\s+[a-zA-Z_]\w*",
+        r"\bfrom\s+[a-zA-Z_]\w*\s+import\b",
+        r"\belif\b",
+        r"\bexcept(?:\s+\w+)?\s*:",
+        r"\bfinally\s*:",
+        r"\bprint\s*\(",
+        r"\bprint\s+['\"\(]",
+        r"\b__init__\b",
+        r"if\s+__name__\s*==\s*['\"]__main__['\"]:",
+        r"\bself\.",
+        r":\s*$",
+    ]
+    for pat in py_patterns:
+        scores["python"] += len(re.findall(pat, text, re.M)) * 3
+
+    # Bash / Shell
+    sh_patterns = [
+        r"^\s*\$\s+[a-zA-Z]",
+        r"^\s*#\s+(?:sudo|apt|yum|pacman|systemctl|chmod|chown|mkdir|grep|cat|curl|wget|tar|ssh|scp|echo|export|rm|cp|mv)\b",
+        r"\b(?:sudo|apt-get|apt|yum|pacman|systemctl|systemd)\b",
+        r"\b(?:chmod|chown|mkdir|grep|cat|curl|wget|tar|ssh|scp|export)\b",
+        r"#!/bin/(?:bash|sh|zsh)",
+        r"\bif\s+\[.*?\];\s*then\b",
+        r"\bfi\b",
+    ]
+    for pat in sh_patterns:
+        scores["bash"] += len(re.findall(pat, text, re.M)) * 3
+
+    # C / C++
+    c_patterns = [
+        r"#include\s+<[\w.]+>",
+        r"\bint\s+main\s*\([^)]*\)",
+        r"\bprintf\s*\(",
+        r"\bcout\s*<<",
+        r"\bstd::",
+        r"\bnullptr\b",
+        r"\btypedef\s+struct\b",
+        r"\bconst\s+char\s*\*",
+    ]
+    for pat in c_patterns:
+        scores["c" if "cout" not in text and "std::" not in text else "cpp"] += len(re.findall(pat, text)) * 3
+
+    # JavaScript / TypeScript
+    js_patterns = [
+        r"\bconsole\.log\s*\(",
+        r"\bconst\s+[a-zA-Z_]\w*\s*=",
+        r"\blet\s+[a-zA-Z_]\w*\s*=",
+        r"\bfunction\s*[a-zA-Z_]\w*\s*\(",
+        r"=>\s*\{?",
+        r"\bdocument\.getElementById\b",
+        r"\bwindow\.",
+        r"\bexport\s+(?:default\s+)?(?:class|function|const)\b",
+    ]
+    for pat in js_patterns:
+        scores["javascript"] += len(re.findall(pat, text)) * 2
+
+    # SQL
+    sql_patterns = [
+        r"\bSELECT\s+.*?\s+FROM\b",
+        r"\bINSERT\s+INTO\b",
+        r"\bCREATE\s+TABLE\b",
+        r"\bUPDATE\s+\w+\s+SET\b",
+        r"\bDELETE\s+FROM\b",
+        r"\bGROUP\s+BY\b",
+        r"\bORDER\s+BY\b",
+    ]
+    for pat in sql_patterns:
+        scores["sql"] += len(re.findall(pat, text, re.I)) * 3
+
+    # Java
+    java_patterns = [
+        r"\bpublic\s+class\s+\w+",
+        r"\bpublic\s+static\s+void\s+main\b",
+        r"\bSystem\.out\.println\s*\(",
+        r"\bpackage\s+[\w.]+;",
+    ]
+    for pat in java_patterns:
+        scores["java"] += len(re.findall(pat, text)) * 3
+
+    best = scores.most_common(1)
+    if best and best[0][1] >= 2:
+        return best[0][0]
+    return ""
+
+
+def strip_listing_numbers(lines: list[str]) -> list[str]:
+    """Strip leading line numbers (e.g. '1  import os') while preserving code indentation."""
+    if len(lines) < 2:
+        return lines
+    non_empty = [(idx, ln) for idx, ln in enumerate(lines) if ln.strip()]
+    if len(non_empty) < 2:
+        return lines
+
+    pattern = re.compile(r"^(\s*\d{1,4})(\s+)(.*)$")
+    matches = []
+    for idx, ln in non_empty:
+        m = pattern.match(ln)
+        if m:
+            matches.append((idx, int(m.group(1).strip()), len(m.group(2)), m.group(3)))
+
+    if len(matches) >= 0.7 * len(non_empty):
+        nums = [m[1] for m in matches]
+        is_increasing = all(nums[i] < nums[i + 1] for i in range(len(nums) - 1))
+        if is_increasing or (nums[0] in (0, 1) and nums[-1] >= len(nums) - 1):
+            min_sep = min(m[2] for m in matches)
+            new_lines = list(lines)
+            for idx, num, sep_len, rest in matches:
+                extra_indent = " " * (sep_len - min_sep)
+                new_lines[idx] = extra_indent + rest
+            return new_lines
+    return lines
+
+
+# --------------------------------------------------------------------------- #
 #  Low level extraction: PyMuPDF rawdict -> Seg / Line
 # --------------------------------------------------------------------------- #
-def make_seg(span, mono_fonts=None):
-    chars = span.get("chars") or []
+def make_seg(span: dict, mono_fonts: Optional[Set[str]] = None) -> Optional[Seg]:
+    chars = span.get("chars", [])
     if not chars:
         return None
     font = (span.get("font") or "").split("+")[-1]
@@ -316,13 +571,13 @@ def make_seg(span, mono_fonts=None):
 
     items = []  # (x_start, x_end, char)
     for ch in chars:
-        c = sanitize_text(ch["c"].translate(CHAR_TRANS))
+        c = clean_text(ch["c"].translate(CHAR_TRANS))
         if not c:
             continue
         ox = ch["origin"][0]
         bx1 = ch["bbox"][2]
         items.append((ox, max(bx1, ox), c))
-    # trim whitespace on both ends
+
     while items and items[0][2].isspace():
         items.pop(0)
     while items and items[-1][2].isspace():
@@ -336,7 +591,6 @@ def make_seg(span, mono_fonts=None):
         cw = size * 0.6
 
     if mono:
-        # Rebuild the string from character positions -> exact internal spacing.
         ref = items[0][0]
         out, col = [], 0
         for x0, _x1, c in items:
@@ -352,13 +606,13 @@ def make_seg(span, mono_fonts=None):
     else:
         text = re.sub(r" {2,}", " ", "".join(c for _a, _b, c in items))
 
-    text = sanitize_text(text)
+    text = clean_text(text)
     min_x = min(min(ox, bx1) for ox, bx1, _c in items)
     max_x = max(max(ox, bx1) for ox, bx1, _c in items)
     return Seg(min_x, max_x, text, size, mono, bold, cw, span["origin"][1])
 
 
-def extract_raw_lines(page, textpage=None, mono_fonts=None):
+def extract_raw_lines(page: pymupdf.Page, textpage: Any = None, mono_fonts: Optional[Set[str]] = None) -> list[Line]:
     d = page.get_text("rawdict", flags=TEXT_FLAGS, textpage=textpage)
     out = []
     for b in d.get("blocks", []):
@@ -366,7 +620,7 @@ def extract_raw_lines(page, textpage=None, mono_fonts=None):
             continue
         for ln in b.get("lines", []):
             dx, dy = ln.get("dir", (1, 0))
-            if abs(dy) > 0.10:      # rotated / vertical text (watermarks, side tabs)
+            if abs(dy) > 0.10:      # rotated / vertical text
                 continue
             segs = [s for s in (make_seg(sp, mono_fonts) for sp in ln.get("spans", [])) if s]
             if not segs:
@@ -376,8 +630,8 @@ def extract_raw_lines(page, textpage=None, mono_fonts=None):
     return out
 
 
-def merge_line_group(group):
-    is_rtl = any(is_rtl_text(s.text) for ln in group for s in ln.segs)
+def merge_line_group(group: list[Line]) -> Line:
+    is_rtl = any(l.is_rtl for l in group)
     if is_rtl:
         sorted_group = sorted(group, key=lambda l: -l.x1)
         segs = []
@@ -388,7 +642,7 @@ def merge_line_group(group):
         for ln in group:
             segs.extend(ln.segs)
         segs.sort(key=lambda s: s.x0)
-    # remove duplicated text (fake-bold PDFs draw the same text twice)
+    # Deduplicate fake-bold runs
     dedup = []
     for s in segs:
         if dedup and s.text == dedup[-1].text and abs(s.x0 - dedup[-1].x0) < 1.5:
@@ -397,7 +651,7 @@ def merge_line_group(group):
     return Line(dedup, min(l.y0 for l in group), max(l.y1 for l in group))
 
 
-def merge_baselines(lines):
+def merge_baselines(lines: list[Line]) -> list[Line]:
     """Combine fragments that sit on the same visual line, return top-to-bottom order."""
     if not lines:
         return []
@@ -417,7 +671,8 @@ def merge_baselines(lines):
     return merged
 
 
-def render_table(rows, maxw=40):
+def render_table(rows: list[list[Any]], maxw: int = 40) -> list[str]:
+    """Render table rows as clean ASCII box grid."""
     rows = [[clean_ws(str(c)) if c is not None else "" for c in r] for r in rows]
     ncols = max(len(r) for r in rows)
     rows = [r + [""] * (ncols - len(r)) for r in rows]
@@ -425,81 +680,132 @@ def render_table(rows, maxw=40):
     rows = [[r[i] for i in keep] for r in rows]
     if not rows or not rows[0]:
         return []
-    widths = [max(3, min(maxw, max(len(r[i]) for r in rows))) for i in range(len(rows[0]))]
-    sep = "+" + "+".join("-" * (w + 2) for w in widths) + "+"
-    hsep = "+" + "+".join("=" * (w + 2) for w in widths) + "+"
-    out = [sep]
-    for ri, r in enumerate(rows):
-        cells = [textwrap.wrap(c, w, break_long_words=True) or [""] for c, w in zip(r, widths)]
-        for k in range(max(len(c) for c in cells)):
-            out.append("| " + " | ".join((c[k] if k < len(c) else "").ljust(w)
-                                         for c, w in zip(cells, widths)) + " |")
-        out.append(hsep if ri == 0 and len(rows) > 1 else sep)
+    ncols = len(rows[0])
+    widths = [min(maxw, max(len(r[c]) for r in rows)) for c in range(ncols)]
+    widths = [max(w, 3) for w in widths]
+
+    def sep(ch):
+        return "+" + "+".join(ch * (w + 2) for w in widths) + "+"
+
+    out = [sep("-")]
+    for r_idx, row in enumerate(rows):
+        wrapped = [textwrap.wrap(cell, w, break_long_words=True) or [""] for cell, w in zip(row, widths)]
+        nh = max(len(w) for w in wrapped)
+        for h in range(nh):
+            line = []
+            for c_idx in range(ncols):
+                val = wrapped[c_idx][h] if h < len(wrapped[c_idx]) else ""
+                line.append(f" {val.ljust(widths[c_idx])} ")
+            out.append("|" + "|".join(line) + "|")
+        out.append(sep("=" if r_idx == 0 and len(rows) > 1 else "-"))
     return out
 
 
+def render_table_md(rows: list[list[Any]]) -> list[str]:
+    """Render table rows as GitHub Flavored Markdown table."""
+    rows = [[clean_ws(str(c)) if c is not None else "" for c in r] for r in rows]
+    ncols = max(len(r) for r in rows)
+    rows = [r + [""] * (ncols - len(r)) for r in rows]
+    keep = [i for i in range(ncols) if any(r[i] for r in rows)]
+    rows = [[r[i].replace("|", "\\|") for i in keep] for r in rows]
+    if not rows or not rows[0]:
+        return []
+    ncols = len(rows[0])
+    header = rows[0]
+    separator = ["---"] * ncols
+    lines = [
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join(separator) + " |",
+    ]
+    for r in rows[1:]:
+        lines.append("| " + " | ".join(r) + " |")
+    return lines
+
+
 # --------------------------------------------------------------------------- #
-#  The extractor
+#  The Core Book Extractor Engine
 # --------------------------------------------------------------------------- #
 class BookExtractor:
     def __init__(self, path: Path, opts: Options):
         self.path = Path(path)
         self.opts = opts
+        self.doc: Optional[pymupdf.Document] = None
+        self.metadata: dict = {}
+        self.cover_title: Optional[str] = None
         self.pages: list[PageData] = []
         self.warnings: list[str] = []
-        self.toc_entries = []
-        self.toc_used = False
-        self.toc_max = 0
-        self.vocab = set()
-        self.mono_fonts = set()
+        self.toc_entries: list = []
+        self.toc_used: bool = False
+        self.toc_max: int = 0
+        self.vocab: Set[str] = set()
+        self.mono_fonts: Set[str] = set()
+        self.proportional_code_styles: Set[Tuple[str, float]] = set()
+        self.body_size: float = 10.0
+        self.body_pitch: float = 12.0
+        self.footnotes_list: list[Footnote] = []
+        self.elements: list = []
+        self.elapsed: float = 0.0
 
-    # ------------------------------------------------------------------ #
-    def run(self):
+    def run(self) -> list:
         opts = self.opts
         doc = pymupdf.open(self.path)
-        if doc.needs_pass:
-            if not doc.authenticate(opts.password or ""):
-                raise RuntimeError("PDF is password protected - use --password")
-        self.doc = doc
-        n = doc.page_count
-        if opts.pages:
-            indices = parse_page_ranges(opts.pages, n)
-        else:
-            indices = list(range(n))
-        if not indices:
-            raise RuntimeError("No pages selected")
+        try:
+            if doc.needs_pass:
+                if not doc.authenticate(opts.password or ""):
+                    raise RuntimeError("PDF is password protected - use --password")
+            self.doc = doc
+            n = doc.page_count
+            if opts.pages:
+                indices = parse_page_ranges(opts.pages, n)
+            else:
+                indices = list(range(n))
+            if not indices:
+                raise RuntimeError("No pages selected")
 
-        t0 = time.time()
-        self._profile_document_fonts()
-        self._read_pages(indices)
-        self._compute_font_stats()
-        if opts.strip_headers:
-            self._remove_headers_footers()
-        for pd in self.pages:
-            self._order_page(pd)
-            for ln in pd.lines:
-                self._classify(ln)
-            self._insert_blocks(pd)
-        self._compute_layout_stats()
-        self._build_vocab()
-        if opts.use_bookmarks:
-            self._apply_bookmarks()
-        self._assign_font_heading_levels()
-        page_elements = [(pd, self._build_page_elements(pd)) for pd in self.pages]
-        elements = self._assemble(page_elements)
-        elements = self._post_process(elements)
-        self.elements = elements
-        self.elapsed = time.time() - t0
-        return elements
+            t0 = time.time()
+            self.metadata = dict(doc.metadata or {})
+            self.cover_title = self._find_cover_title()
+            self._profile_document_fonts()
+            self._read_pages(indices)
+            self._compute_font_stats()
+            self._profile_proportional_code()
+            if opts.strip_headers:
+                self._remove_headers_footers()
+            for pd in self.pages:
+                self._order_page(pd)
+                for ln in pd.lines:
+                    self._classify(ln)
+                self._insert_blocks(pd)
+            self._compute_layout_stats()
+            self._build_vocab()
+            if opts.use_bookmarks:
+                self._apply_bookmarks()
+            self._assign_font_heading_levels()
+            page_elements = [(pd, self._build_page_elements(pd)) for pd in self.pages]
+            elements = self._assemble(page_elements)
+            elements = self._post_process(elements)
+            self.elements = elements
+            self.elapsed = time.time() - t0
+            return elements
+        finally:
+            if doc and not doc.is_closed:
+                doc.close()
 
-    # ------------------------------------------------------------------ #
     def _profile_document_fonts(self):
-        """Pre-screen document fonts and detect monospaced fonts by name and character metrics."""
+        """Profile fonts across sampled pages covering the whole book."""
         mono_fonts = set()
         prop_fonts = set()
         font_widths = defaultdict(dict)
-        sample_pages = min(25, len(self.doc))
-        for pno in range(sample_pages):
+        n = len(self.doc)
+        # Sample strategically: first 10, last 5, and stepped throughout
+        sample_indices = set(range(min(10, n))) | set(range(max(0, n - 5), n))
+        step = max(1, n // 30)
+        for i in range(0, n, step):
+            sample_indices.add(i)
+
+        for pno in sorted(sample_indices):
+            if pno >= n:
+                continue
             p = self.doc[pno]
             d = p.get_text("rawdict", flags=TEXT_FLAGS)
             for b in d.get("blocks", []):
@@ -519,6 +825,7 @@ class BookExtractor:
                             ch = c["c"]
                             if ch.isalpha() and ch not in font_widths[fn]:
                                 font_widths[fn][ch] = round((c["bbox"][2] - c["origin"][0]) / sz, 3)
+
         for fn, w in font_widths.items():
             if "i" in w and "m" in w and abs(w["i"] - w["m"]) < 0.05:
                 mono_fonts.add(fn)
@@ -530,20 +837,42 @@ class BookExtractor:
                 prop_fonts.add(fn)
         self.mono_fonts = mono_fonts
 
-    # ------------------------------------------------------------------ #
-    def _read_pages(self, indices):
+    def _profile_proportional_code(self):
+        """Identify proportional fonts used specifically for code listings (e.g. Garamond 13pt)."""
+        style_counts = Counter()
+        style_code_syntax = Counter()
+        code_syntax_re = re.compile(
+            r"^\s*(?:import\s+\w+|from\s+\w+|def\s+\w+|class\s+\w+|return\b|\w+\s*=\s*|#\(\d+\))|"
+            r"\b(?:user32|kernel32|windll|socket|subprocess|sys|print)\b|[;{}()=]"
+        )
+
+        for pd in self.pages:
+            for ln in pd.lines:
+                if ln.mono_ratio < 0.5:
+                    sz = round(ln.size, 1)
+                    style_counts[sz] += 1
+                    if code_syntax_re.search(ln.plain.strip()):
+                        style_code_syntax[sz] += 1
+
+        body_sz = round(self.body_size, 1)
+        for sz, total in style_counts.items():
+            if total >= 4 and sz != body_sz:
+                ratio = style_code_syntax[sz] / total
+                if ratio >= 0.35:
+                    self.proportional_code_styles.add(sz)
+
+    def _read_pages(self, indices: list[int]):
         opts, doc = self.opts, self.doc
         total = len(indices)
         ocr_failed = False
         for k, pno in enumerate(indices, 1):
             page = doc[pno]
-            if k == 1 or k % 10 == 0 or k == total:
+            if k == 1 or k % 15 == 0 or k == total:
                 log(f"\r  Reading page {k}/{total} ...", opts, end="")
             try:
                 label = page.get_label() or str(pno + 1)
             except Exception:
                 label = str(pno + 1)
-            W, H = page.rect.width, page.rect.height
             lines = extract_raw_lines(page, mono_fonts=self.mono_fonts)
             scanned = False
             if not lines or sum(l.nchars for l in lines) < 15:
@@ -554,118 +883,94 @@ class BookExtractor:
                             tp = page.get_textpage_ocr(flags=TEXT_FLAGS, language=opts.ocr_lang, dpi=300, full=True)
                             lines = extract_raw_lines(page, textpage=tp, mono_fonts=self.mono_fonts)
                             scanned = False
-                        except Exception as exc:  # tesseract missing etc.
+                        except Exception as exc:
                             ocr_failed = True
-                            self.warnings.append(f"OCR unavailable ({exc}); scanned pages were skipped.")
-            # garbled text check (fonts without unicode mapping)
-            allchars = "".join(s.text for l in lines for s in l.segs)
-            bad = sum(1 for c in allchars if c == "\ufffd" or "\ue000" <= c <= "\uf8ff")
-            garbled = len(allchars) > 40 and bad / len(allchars) > 0.15
+                            self.warnings.append(f"OCR unavailable ({exc}); scanned pages skipped.")
 
-            blocks = []
-            if opts.tables and lines:
-                try:
-                    for t in page.find_tables().tables:
-                        data = t.extract()
-                        if len(data) < 2 or max(len(r) for r in data) < 2:
-                            continue
-                        r = pymupdf.Rect(t.bbox)
-                        rendered = render_table(data)
-                        if not rendered:
-                            continue
-                        lines = [l for l in lines if not r.contains(pymupdf.Point((l.x0 + l.x1) / 2, l.yc))]
-                        blocks.append((r.y0, r.x0, "table", rendered))
-                except Exception:
-                    pass
-            if opts.figures:
-                try:
-                    for info in page.get_image_info():
-                        r = pymupdf.Rect(info["bbox"])
-                        if r.width > 0.2 * W and r.height > 0.08 * H and not scanned:
-                            blocks.append((r.y0, r.x0, "figure", ["[Figure]"]))
-                except Exception:
-                    pass
-            self.pages.append(PageData(pno, label, W, H, lines, blocks, scanned, garbled))
-        log("", opts)
-        sc = sum(p.scanned for p in self.pages)
-        gb = sum(p.garbled for p in self.pages)
-        if sc:
-            self.warnings.append(f"{sc} page(s) look scanned (image only, no text layer)."
-                                 + ("" if opts.ocr else " Use --ocr to OCR them (needs Tesseract)."))
-        if gb:
-            self.warnings.append(f"{gb} page(s) contain garbled text (fonts without Unicode mapping);"
-                                 " --ocr may give better results for those.")
+            # Garbled font detection
+            garbled = False
+            if lines:
+                text_cat = "".join(l.plain for l in lines)
+                num_letters = len(re.findall(r"[A-Za-z\u0600-\u06ff]", text_cat))
+                num_pua = len(re.findall(r"[\ue000-\uf8ff\ufffd]", text_cat))
+                if num_letters > 20 and num_pua / (num_letters + num_pua) > 0.35:
+                    garbled = True
 
-    # ------------------------------------------------------------------ #
+            pd = PageData()
+            pd.pno, pd.label = pno, label
+            pd.width, pd.height = page.rect.width, page.rect.height
+            pd.lines = lines
+            pd.blocks = []
+            pd.scanned = scanned
+            pd.garbled = garbled
+            self.pages.append(pd)
+
+        if not opts.quiet:
+            log("", opts)
+
     def _compute_font_stats(self):
-        body, mono = Counter(), Counter()
+        sizes = Counter()
         for pd in self.pages:
             for l in pd.lines:
-                for s in l.segs:
-                    (mono if s.mono else body)[round(s.size * 2) / 2] += s.nchars
-        self.body_size = body.most_common(1)[0][0] if body else (mono.most_common(1)[0][0] if mono else 10.0)
-        self.mono_size = mono.most_common(1)[0][0] if mono else self.body_size
-        self.has_mono = sum(mono.values()) > 0
+                if l.mono_ratio < 0.5:
+                    sizes[round(l.size, 1)] += l.nchars
+        self.body_size = sizes.most_common(1)[0][0] if sizes else 10.0
+        pitches = []
+        for pd in self.pages:
+            ls = [l for l in pd.lines if abs(l.size - self.body_size) < 0.5 and l.mono_ratio < 0.5]
+            for i in range(len(ls) - 1):
+                d = ls[i + 1].base - ls[i].base
+                if 0.8 * self.body_size <= d <= 2.2 * self.body_size:
+                    pitches.append(d)
+        self.body_pitch = statistics.median(pitches) if pitches else self.body_size * 1.2
 
-    # ------------------------------------------------------------------ #
     def _remove_headers_footers(self):
-        zone = 0.12
-        seen = defaultdict(set)
-        top_y_counts = Counter()
-        bot_y_counts = Counter()
-
-        def key(t):
-            return re.sub(r"\s+", " ", re.sub(r"\d+", "#", t.lower())).strip()
-
-        def in_zone(l, pd):
-            return l.y1 < pd.height * zone or l.y0 > pd.height * (1 - zone)
-
-        for i, pd in enumerate(self.pages):
+        """Identify and remove running headers/footers and page numbers across pages."""
+        top_c, bot_c = Counter(), Counter()
+        for pd in self.pages:
+            H = pd.height
             for l in pd.lines:
-                if in_zone(l, pd) and l.mono_ratio < 0.8:
-                    seen[key(l.plain)].add(i)
-                    if l.y1 < pd.height * zone:
-                        top_y_counts[round(l.y1, 0)] += 1
-                    elif l.y0 > pd.height * (1 - zone):
-                        bot_y_counts[round(l.y0, 0)] += 1
+                txt = l.plain.strip()
+                if not txt:
+                    continue
+                if l.y1 <= H * 0.12:
+                    top_c[round(l.y0, 0)] += 1
+                elif l.y0 >= H * 0.88:
+                    bot_c[round(l.y0, 0)] += 1
 
-        min_rep = 3 if len(self.pages) >= 6 else 10 ** 9
-        repeating = {k for k, v in seen.items() if len(v) >= min_rep and re.search(r"[a-z]", k)}
-
-        min_band = max(4, int(len(self.pages) * 0.05)) if len(self.pages) >= 8 else 10 ** 9
-        top_bands = {y for y, c in top_y_counts.items() if c >= min_band}
-        bot_bands = {y for y, c in bot_y_counts.items() if c >= min_band}
+        top_bands = [y for y, c in top_c.items() if c >= max(3, len(self.pages) * 0.20)]
+        bot_bands = [y for y, c in bot_c.items() if c >= max(3, len(self.pages) * 0.20)]
 
         for pd in self.pages:
+            H = pd.height
             kept = []
             for l in pd.lines:
-                if in_zone(l, pd) and l.mono_ratio < 0.8:
-                    t = l.plain.strip()
-                    if PAGE_NUM_RE.match(t) and l.size <= self.body_size * 1.25:
+                txt = l.plain.strip()
+                if PAGE_NUM_RE.match(txt):
+                    if l.y1 <= H * 0.12 or l.y0 >= H * 0.88:
                         continue
-                    if key(t) in repeating:
-                        continue
+                if l.y1 <= H * 0.12 and any(abs(round(l.y0, 0) - ty) <= 3.0 for ty in top_bands):
                     if l.size <= self.body_size * 1.15:
-                        if any(abs(round(l.y1, 0) - ty) <= 3.0 for ty in top_bands):
-                            continue
-                        if any(abs(round(l.y0, 0) - by) <= 3.0 for by in bot_bands):
-                            continue
+                        continue
+                if l.y0 >= H * 0.88 and any(abs(round(l.y0, 0) - by) <= 3.0 for by in bot_bands):
+                    if l.size <= self.body_size * 1.15:
+                        continue
                 kept.append(l)
             pd.lines = kept
 
-    # ------------------------------------------------------------------ #
     def _order_page(self, pd: PageData):
-        """Detect columns, order lines in reading order, merge same-baseline fragments."""
+        """Sort lines in reading order, handle RTL and 2-column spreads."""
         lines = pd.lines
         body = self.body_size
-        # pull out drop caps (huge single initial letter)
         dropcaps = [l for l in lines if len(l.plain) == 1 and l.plain.isalpha() and l.size >= body * 1.8]
         for d in dropcaps:
             d.dropcap = True
         lines = [l for l in lines if not l.dropcap]
 
+        page_is_rtl = sum(count_rtl_chars(l.plain) for l in lines) > sum(len(l.plain) - count_rtl_chars(l.plain) for l in lines)
         mode = self.opts.columns
         ordered = None
+
         if mode != "1" and len(lines) >= 8:
             W = pd.width
             best = None
@@ -698,21 +1003,25 @@ class BookExtractor:
                         l.col = 0
                     for l in band_r:
                         l.col = 1
-                    ordered += merge_baselines(band_l) + merge_baselines(band_r)
+                    # In RTL two-column, right column is read first!
+                    if page_is_rtl:
+                        ordered += merge_baselines(band_r) + merge_baselines(band_l)
+                    else:
+                        ordered += merge_baselines(band_l) + merge_baselines(band_r)
                     if fi < len(full):
                         fl = full[fi]
                         fl.col = 0
                         ordered.append(fl)
                         fi += 1
                     prev_y = b
-                # merged lines lost col attribute -> recompute
                 for l in ordered:
                     l.col = 1 if l.x0 >= gx - 1 else 0
+
         if ordered is None:
             ordered = merge_baselines(lines)
             for l in ordered:
                 l.col = 0
-        # re-insert drop caps before the first line they overlap
+
         for d in dropcaps:
             d.kind = "dropcap"
             idx = len(ordered)
@@ -724,12 +1033,38 @@ class BookExtractor:
             ordered.insert(idx, d)
         pd.lines = ordered
 
-    # ------------------------------------------------------------------ #
-    def _compose(self, ln: Line, code: bool) -> str:
-        out, prev = [], None
+    def _classify(self, ln: Line):
+        """Classify line as heading, code, footnote, list item, or text."""
+        # Check for footnotes at bottom of page
+        if ln.y0 >= 0.75 * self.body_size * 50 and ln.size <= self.body_size * 0.85:
+            if re.match(r"^(\*|†|‡|\[\d{1,2}\]|\d{1,2}\b)", ln.plain):
+                ln.kind = "footnote"
+                return
+
+        # Check for code (monospace or proportional code style)
+        is_prop_code = round(ln.size, 1) in self.proportional_code_styles
+        if ln.mono_ratio >= 0.5 or (is_prop_code and ln.size < self.body_size * 0.98):
+            ln.kind = "code"
+            ln.text = self._join_line_spans(ln, code=True)
+            return
+
+        # Check for headings
+        txt = clean_ws(ln.plain)
+        if (ln.size >= self.body_size * 1.25 or (ln.bold_ratio >= 0.8 and ln.size >= self.body_size * 1.08)) and len(txt) <= 120:
+            if not TERMINAL_RE.search(txt) or CHAPTER_RE.match(txt):
+                ln.kind = "heading"
+                ln.text = self._join_line_spans(ln, code=False)
+                return
+
+        ln.text = self._join_line_spans(ln, code=False)
+
+    def _join_line_spans(self, ln: Line, code: bool) -> str:
+        out = []
+        prev = None
         mark = self.opts.mark_inline_code and not code
         in_code = False
-        is_rtl = any(is_rtl_text(s.text) for s in ln.segs)
+        is_rtl = ln.is_rtl
+
         for s in ln.segs:
             if prev is not None:
                 gap = (prev.x0 - s.x1) if is_rtl else (s.x0 - prev.x1)
@@ -743,14 +1078,14 @@ class BookExtractor:
                     if gap > 2.5 * max(s.size, prev.size):
                         ln.tabular = True
                         out.append("\x00")
-                    elif gap > 0.12 * min(s.size, prev.size) or is_rtl:
+                    # Do NOT force space blindly on RTL; respect the physical gap!
+                    elif gap > 0.12 * min(s.size, prev.size):
                         out.append(" ")
             if mark:
                 if s.mono and not in_code:
                     out.append("`")
                     in_code = True
                 elif not s.mono and in_code:
-                    # put closing tick before the separating space
                     if out and out[-1] == " ":
                         out.insert(len(out) - 1, "`")
                     else:
@@ -762,106 +1097,59 @@ class BookExtractor:
             out.append("`")
         text = "".join(out)
         if code:
-            return sanitize_text(text.rstrip())
+            return clean_text(text.rstrip())
         text = re.sub(r" {2,}", " ", text).strip()
         if LEADER_RE.search(text) and re.search(r"(?:\.\s*){4,}\s*\S{1,8}$", text):
             ln.tabular = True
             text = LEADER_RE.sub(" .... ", text)
-        return sanitize_text(text.replace("\x00", "    "))
-
-    def _classify(self, ln: Line):
-        if ln.kind == "dropcap":
-            ln.text = ln.plain
-            return
-        body = self.body_size
-        plain = clean_ws(ln.plain)
-        is_mono = ln.mono_ratio >= 0.8
-        head_ref = max(body, self.mono_size) if is_mono else body
-        if ln.size >= head_ref * 1.15 and len(plain) <= 200 and re.search(r"\w", plain):
-            ln.kind = "heading"
-            ln.text = plain
-        elif is_mono:
-            ln.kind = "code"
-            ln.text = self._compose(ln, code=True)
-        else:
-            ln.kind = "text"
-            ln.text = self._compose(ln, code=False)
+        return clean_text(text.replace("\x00", "    "))
 
     def _insert_blocks(self, pd: PageData):
-        for y0, x0, kind, text in sorted(pd.blocks):
-            fake = Line([Seg(x0, x0 + 1, "x", self.body_size, False, False, 1, y0)], y0, y0 + 1)
-            fake.kind, fake.block = kind, text
-            col = 1 if pd.ncols == 2 and x0 >= pd.gutter - 1 else 0
-            fake.col = col
-            idx = len(pd.lines)
-            for i, l in enumerate(pd.lines):
-                if l.col == col and l.y0 >= y0:
-                    idx = i
-                    break
-            pd.lines.insert(idx, fake)
+        if not pd.blocks:
+            return
+        pd.blocks.sort(key=lambda b: (b[0], b[1]))
+        bi = 0
+        ordered = []
+        for l in pd.lines:
+            while bi < len(pd.blocks) and pd.blocks[bi][0] <= l.y0:
+                ordered.append(pd.blocks[bi])
+                bi += 1
+            ordered.append(l)
+        while bi < len(pd.blocks):
+            ordered.append(pd.blocks[bi])
+            bi += 1
+        pd.lines = ordered
 
-    # ------------------------------------------------------------------ #
     def _compute_layout_stats(self):
-        body = self.body_size
-        bp, cp = [], []
-        acc = defaultdict(lambda: ([], []))
         for pd in self.pages:
-            ls = pd.lines
-            for a, b in zip(ls, ls[1:]):
-                if a.col != b.col:
-                    continue
-                d = b.base - a.base
-                if a.kind == b.kind == "text" and abs(a.size - body) < 0.6 and abs(b.size - body) < 0.6 \
-                        and 0 < d < 3 * body:
-                    bp.append(d)
-                elif a.kind == b.kind == "code" and 0 < d < 3 * max(a.size, b.size):
-                    cp.append(d)
-            # column metrics
+            cols = defaultdict(list)
+            for item in pd.lines:
+                if isinstance(item, Line) and item.kind == "text":
+                    cols[item.col].append(item)
             pd.colm = {}
-            bycol = defaultdict(list)
-            for l in ls:
-                if l.kind == "text":
-                    bycol[l.col].append(l)
-            for col, lst in bycol.items():
-                xs0 = sorted(l.x0 for l in lst)
-                xs1 = sorted(l.x1 for l in lst)
-                k = (pd.pno % 2, col, pd.ncols)
-                acc[k][0].extend(xs0)
-                acc[k][1].extend(xs1)
-                if len(lst) >= 8:
-                    pd.colm[col] = (pct(xs0, 0.15), pct(xs1, 0.85))
-        self.body_pitch = mode_of(bp, 1, body * 1.2)
-        self.code_pitch = mode_of(cp, 1, self.mono_size * 1.2)
-        docm = {k: (pct(sorted(a), 0.15), pct(sorted(b), 0.85)) for k, (a, b) in acc.items() if a}
-        for pd in self.pages:
-            for col in {l.col for l in pd.lines}:
-                if col in pd.colm:
-                    continue
-                k = (pd.pno % 2, col, pd.ncols)
-                if k in docm:
-                    pd.colm[col] = docm[k]
+            for c, ls in cols.items():
+                if len(ls) >= 3:
+                    left = percentile([l.x0 for l in ls], 0.15)
+                    right = percentile([l.x1 for l in ls], 0.85)
+                    pd.colm[c] = (left, right)
+                elif ls:
+                    pd.colm[c] = (min(l.x0 for l in ls), max(l.x1 for l in ls))
                 else:
-                    cl = [l for l in pd.lines if l.col == col] or pd.lines
-                    pd.colm[col] = (min(l.x0 for l in cl), max(l.x1 for l in cl))
+                    pd.colm[c] = (0.0, pd.width)
 
     def _build_vocab(self):
         vocab = set()
         for pd in self.pages:
-            for l in pd.lines:
-                if l.kind != "text":
-                    continue
-                words = WORD_RE.findall(l.text)
-                for w in words[:-1]:
-                    vocab.add(w.lower())
+            for item in pd.lines:
+                if isinstance(item, Line) and item.kind == "text":
+                    for w in WORD_RE.findall(item.plain):
+                        vocab.add(w.lower())
         self.vocab = vocab
 
-    # ------------------------------------------------------------------ #
-    #  Bookmarks (PDF outline) -> authoritative chapter / section headings
-    # ------------------------------------------------------------------ #
     def _heading_like(self, l: Line) -> bool:
         return l.kind == "heading" or l.bold_ratio >= 0.8 or l.size >= self.body_size * 1.08
 
-    def _similarity(self, nw, nt, heading_like):
+    def _similarity(self, nw: str, nt: str, heading_like: bool) -> float:
         if nw == nt:
             return 1.0
         sm = difflib.SequenceMatcher(None, nw, nt, autojunk=False)
@@ -881,12 +1169,12 @@ class BookExtractor:
         skip = ("absorbed", "toc_heading", "table", "figure", "code", "dropcap")
         best = None
         for i in range(n):
-            if lines[i].kind in skip:
+            if not isinstance(lines[i], Line) or lines[i].kind in skip:
                 continue
             texts, hl = [], True
             for k in range(3):
                 j = i + k
-                if j >= n or lines[j].kind in skip:
+                if j >= n or not isinstance(lines[j], Line) or lines[j].kind in skip:
                     break
                 texts.append(lines[j].text or lines[j].plain)
                 hl = hl and self._heading_like(lines[j])
@@ -898,7 +1186,6 @@ class BookExtractor:
                 if len(nw) > 1.5 * len(nt) + 8:
                     break
                 score = self._similarity(nw, nt, hl)
-                # Penalize lines in the top margin with body font size (likely running headers)
                 if lines[i].y1 < pd.height * 0.10 and lines[i].size <= self.body_size * 1.15:
                     score *= 0.5
                 thr = 0.80 if hl else 0.93
@@ -916,15 +1203,14 @@ class BookExtractor:
         page_map = {pd.pno: pd for pd in self.pages}
         entries = []
         for lvl, title, page in toc:
-            title = sanitize_text(clean_ws(str(title)))
+            title = repair_metadata(clean_ws(str(title)))
             if title and 1 <= page <= self.doc.page_count:
                 entries.append([lvl, title, page - 1])
         if len(entries) < 2:
             return
         top_page_count = Counter(e[2] for e in entries).most_common(1)[0][1]
         if len(entries) > 4 and top_page_count > 0.6 * len(entries):
-            return  # broken outline (everything points to the same page)
-        # single wrapping root entry (e.g. the book title) -> promote children
+            return
         lv = Counter(e[0] for e in entries)
         minlv = min(lv)
         if lv[minlv] == 1 and len(entries) > 3:
@@ -946,81 +1232,64 @@ class BookExtractor:
                 continue
             m = self._match_title(pd, title)
             if m is None:
-                pd.toc_unmatched.append((lvl, sanitize_text(title)))
+                pd.toc_unmatched.append((lvl, title))
                 continue
             _score, i, j = m
             lines = pd.lines
             for t in range(i + 1, j + 1):
-                lines[t].kind = "absorbed"
-            # If the matched line on the page already contains the printed title
-            # with a section prefix (e.g. "3.1 Function calls"), preserve the printed text!
-            page_text = clean_ws(" ".join((lines[t].text or lines[t].plain) for t in range(i, j + 1)))
+                if isinstance(lines[t], Line):
+                    lines[t].kind = "absorbed"
+            page_text = clean_ws(" ".join((lines[t].text or lines[t].plain) for t in range(i, j + 1) if isinstance(lines[t], Line)))
             if norm_key(title) in norm_key(page_text) and len(page_text) <= len(title) + 25:
                 if re.match(r"^(?:\d{1,3}(?:\.\d{1,3})*|[A-Z]\.\d{1,3}|Chapter\s+\w+[:.]?)\s+", page_text, re.I):
                     title = page_text
-            # absorb a short label right above it ("CHAPTER 3", "Part II", "3")
             nt = norm_key(title)
             t, absorbed = i - 1, 0
             while t >= 0 and absorbed < 2:
                 lt = lines[t]
-                lab = clean_ws(lt.plain)
-                if lt.kind == "heading" and len(lab) <= 25 and (LABEL_RE.match(lab) or norm_key(lab) in nt):
-                    lt.kind = "absorbed"
-                    if norm_key(lab) not in nt:
-                        lab = lab.rstrip(".:")
-                        if re.fullmatch(r"\d{1,3}|[IVXLCivxlc]{1,6}", lab):
-                            title = f"{lab}. {title}"            # bare number  -> "3. Functions"
-                        else:
-                            lab = lab.title() if lab.isupper() else lab
-                            title = f"{lab}: {title}"            # "CHAPTER 3"  -> "Chapter 3: Functions"
-                        nt = norm_key(title)
-                    t -= 1
-                    absorbed += 1
+                if isinstance(lt, Line):
+                    lab = clean_ws(lt.plain)
+                    if lt.kind == "heading" and len(lab) <= 25 and (LABEL_RE.match(lab) or norm_key(lab) in nt):
+                        lt.kind = "absorbed"
+                        if norm_key(lab) not in nt:
+                            lab = lab.rstrip(".:")
+                            if re.fullmatch(r"\d{1,3}|[IVXLCivxlc]{1,6}", lab):
+                                title = f"{lab}. {title}"
+                            else:
+                                lab = lab.title() if lab.isupper() else lab
+                                title = f"{lab}: {title}"
+                            nt = norm_key(title)
+                        t -= 1
+                        absorbed += 1
+                    else:
+                        break
                 else:
                     break
             lines[i].kind = "toc_heading"
             lines[i].level = lvl
-            lines[i].text = sanitize_text(title)
+            lines[i].text = title
 
-    # ------------------------------------------------------------------ #
     def _assign_font_heading_levels(self):
-        sizes = Counter()
+        sizes = set()
         for pd in self.pages:
-            for l in pd.lines:
-                if l.kind == "heading":
-                    sizes[round(l.size * 2) / 2] += 1
-        clusters = []
-        for s in sorted(sizes, reverse=True):
-            if clusters and clusters[-1][0] - s <= 0.75:
-                clusters[-1][1].append(s)
-            else:
-                clusters.append((s, [s]))
-        level_of = {}
-        offset = self.toc_max if self.toc_used else 0
-        for idx, (_head, members) in enumerate(clusters):
-            for s in members:
-                level_of[s] = min(4, offset + idx + 1)
+            for item in pd.lines:
+                if isinstance(item, Line) and item.kind == "heading" and not getattr(item, "level", 0):
+                    sizes.add(round(item.size, 1))
+        order = sorted(sizes, reverse=True)
+        level_map = {sz: min(4, i + (self.toc_max + 1 if self.toc_used else 1)) for i, sz in enumerate(order)}
         for pd in self.pages:
-            for l in pd.lines:
-                if l.kind == "heading":
-                    l.level = level_of.get(round(l.size * 2) / 2, 3)
-                    if not self.toc_used and CHAPTER_RE.match(l.text):
-                        l.level = 1
+            for item in pd.lines:
+                if isinstance(item, Line) and item.kind == "heading" and not getattr(item, "level", 0):
+                    item.level = level_map.get(round(item.size, 1), 3)
 
-    # ------------------------------------------------------------------ #
-    #  Page -> elements
-    # ------------------------------------------------------------------ #
-    def _list_marker(self, text, prev_line, prev_ends_par):
-        m = STRONG_BULLET_RE.match(text)
+    def _split_list_marker(self, text: str) -> tuple[Optional[str], str]:
+        m = STRONG_BULLET_RE.match(text) or WEAK_BULLET_RE.match(text) or NUM_LIST_RE.match(text)
         if m:
-            return "•", text[m.end():]
-        m = WEAK_BULLET_RE.match(text) or NUM_LIST_RE.match(text)
-        if m and (prev_line is None or prev_ends_par):
             mk = m.group(1)
             return ("•" if mk in "-–—*" else mk), text[m.end():]
         return None, text
 
-    def _expected_pitch(self, a, b):
+    def _expected_pitch(self, a: Line, b: Line) -> float:
         return self.body_pitch * (max(a.size, b.size) / self.body_size)
 
     def _is_break(self, a: Line, b: Line, cur: Para, pd: PageData) -> bool:
@@ -1036,196 +1305,142 @@ class BookExtractor:
         em = self.body_size
         left, right = pd.colm.get(b.col, (a.x0, a.x1))
         width = max(right - left, 1.0)
-        if cur.marker:
-            if b.x0 > cur.marker_x0 + 0.3 * em:
-                return False
-            return bool(TERMINAL_RE.search(a.text))
         ends = bool(TERMINAL_RE.search(a.text))
-        if a.x1 < right - 0.40 * width:
-            return True
-        if ends and a.x1 < right - 0.12 * width:
-            return True
+
+        if a.is_rtl:
+            # For RTL lines, lines start at right and end at left!
+            if a.x0 > left + 0.40 * width:
+                return True
+            if ends and a.x0 > left + 0.12 * width:
+                return True
+        else:
+            if a.x1 < right - 0.40 * width:
+                return True
+            if ends and a.x1 < right - 0.12 * width:
+                return True
+
         if b.x0 > a.x0 + 0.8 * em and a.x0 < left + 0.5 * em:
-            return True                                    # first-line indent of new paragraph
+            return True
         if cur.rest_x0 is not None and b.x0 < cur.rest_x0 - 0.8 * em:
-            return True                                    # end of an indented block
+            return True
         return False
 
-    def _build_page_elements(self, pd: PageData):
+    def _build_page_elements(self, pd: PageData) -> list:
         els = []
         for lvl, title in (pd.toc_unmatched or []):
             els.append(Heading(lvl, title))
-        lines = pd.lines
-        cur = None            # Para | Code | Pre
-        prev = None           # previous Line
-        last_heading_line = None
-        pending_drop = ""
-        em = self.body_size
+        cur: Union[Para, Code, Pre, None] = None
+        prev: Optional[Line] = None
 
-        def flush():
-            nonlocal cur
-            if cur is not None:
-                els.append(cur)
-                cur = None
-
-        for idx, ln in enumerate(lines):
-            k = ln.kind
-            if k == "absorbed":
-                continue
-            if k == "dropcap":
-                pending_drop = ln.text
-                continue
-            if k in ("table", "figure"):
-                flush()
-                els.append(Pre(ln.block))
+        for item in pd.lines:
+            if isinstance(item, tuple):
+                if cur is not None:
+                    els.append(cur)
+                    cur = None
                 prev = None
+                els.append(Pre(item[3].splitlines()))
                 continue
-            if k == "toc_heading":
-                flush()
-                els.append(Heading(ln.level, ln.text))
-                prev, last_heading_line = ln, None
+            ln = item
+            if ln.kind in ("absorbed", "dropcap"):
+                if ln.kind == "dropcap" and isinstance(cur, Para):
+                    cur.lines[0] = ln.plain + cur.lines[0]
                 continue
-            if k == "heading":
-                flush()
-                h = els[-1] if els else None
-                if (isinstance(h, Heading) and h.from_font and last_heading_line is not None
-                        and prev is last_heading_line and ln.col == prev.col
-                        and 0 < ln.y0 - prev.y1 < 1.5 * max(ln.size, prev.size)):
-                    if h.level == ln.level:
-                        h.text = f"{h.text} {ln.text}"
-                    elif len(h.text) <= 25 or LABEL_RE.match(h.text):
-                        lab = h.text.title() if h.text.isupper() and CHAPTER_RE.match(h.text) else h.text
-                        h.text = f"{lab.rstrip('.:')}: {ln.text}"
-                        h.level = min(h.level, ln.level)
-                    else:
-                        els.append(Heading(ln.level, ln.text, True))
+            if ln.kind == "footnote":
+                if cur is not None:
+                    els.append(cur)
+                    cur = None
+                prev = None
+                m = re.match(r"^(\*|†|‡|\[\d{1,2}\]|\d{1,2})\s*(.*)", ln.plain)
+                if m:
+                    self.footnotes_list.append(Footnote(m.group(1), m.group(2), pd.pno + 1))
                 else:
-                    els.append(Heading(ln.level, ln.text, True))
-                prev = last_heading_line = ln
+                    self.footnotes_list.append(Footnote("*", ln.plain, pd.pno + 1))
                 continue
-            if k == "code":
-                left = pd.colm.get(ln.col, (ln.x0, ln.x1))[0]
-                cw = ln.cw or self.mono_size * 0.6
-                indent = max(0, int(round((ln.x0 - left) / cw)))
-                if isinstance(cur, Code) and prev is not None and prev.kind == "code" and prev.col == ln.col:
+            if ln.kind in ("toc_heading", "heading"):
+                if cur is not None:
+                    els.append(cur)
+                    cur = None
+                prev = None
+                els.append(Heading(ln.level, ln.text, from_font=(ln.kind == "heading")))
+                continue
+            if ln.kind == "code":
+                if not isinstance(cur, Code):
+                    if cur is not None:
+                        els.append(cur)
+                    cur = Code()
+                    prev = None
+                bl = 0
+                if prev is not None:
                     d = ln.base - prev.base
-                    ratio = d / self.code_pitch if self.code_pitch else 1
-                    if 0 < ratio <= 3.6:
-                        cur.lines.append([indent, ln.text, max(0, min(2, int(round(ratio)) - 1))])
-                        prev = ln
-                        continue
-                flush()
-                cur = Code()
-                cur.lines.append([indent, ln.text, 0])
+                    p = self._expected_pitch(prev, ln)
+                    if d > p * 1.5:
+                        bl = max(1, int(round((d - p) / p)))
+                left = pd.colm.get(ln.col, (0.0, pd.width))[0]
+                em = ln.cw or ln.size * 0.6
+                ind = int(round((ln.x0 - left) / em)) if ln.x0 > left else 0
+                cur.lines.append((max(0, ind), ln.text, bl))
                 prev = ln
                 continue
 
-            # ---- ordinary text line ----
-            text = ln.text
-            if pending_drop:
-                text = pending_drop + text
-                ln.text = text
-                pending_drop = ""
-            if not text:
-                continue
-            nxt = lines[idx + 1] if idx + 1 < len(lines) else None
-            if ln.tabular:
-                if isinstance(cur, Pre) and prev is not None and prev.tabular:
-                    cur.lines.append(text)
-                else:
-                    flush()
-                    cur = Pre([text])
-                prev = ln
-                continue
-
-            # bold stand-alone line -> minor heading
-            gap_above = prev is None or prev.kind != "text" or prev.col != ln.col or \
-                (ln.base - prev.base) > self._expected_pitch(prev, ln) * 1.15 + 0.3
-            if (ln.bold_ratio >= 0.95 and len(text) <= 90 and len(text.split()) <= 14
-                    and not re.search(r"[.,;]$", text) and not text[0].islower()
-                    and re.search(r"[A-Za-z]{2}", text) and gap_above
-                    and not STRONG_BULLET_RE.match(text)
-                    and not (nxt is not None and nxt.kind == "text" and nxt.bold_ratio >= 0.95
-                             and nxt.col == ln.col and 0 < nxt.base - ln.base <= self._expected_pitch(ln, nxt) * 1.15 + 0.3)):
-                flush()
-                els.append(Heading(4, text, True))
-                prev, last_heading_line = ln, None
-                continue
-
-            prev_ends = (cur is None or not isinstance(cur, Para) or prev is None or prev.kind != "text"
-                         or bool(TERMINAL_RE.search(prev.text)) or cur.marker is not None
-                         or self._is_break(prev, ln, Para(""), pd))
-            marker, rest = self._list_marker(text, prev if isinstance(cur, Para) else None, prev_ends)
-            if marker is not None:
-                flush()
+            # Body text
+            marker, body = self._split_list_marker(ln.text)
+            if marker:
+                if cur is not None:
+                    els.append(cur)
                 left = pd.colm.get(ln.col, (ln.x0, ln.x1))[0]
-                lvl = max(0, min(3, int(round((ln.x0 - left) / (2 * em)))))
-                cur = Para(rest, marker, lvl, ln.x0)
-            elif isinstance(cur, Para) and not self._is_break(prev, ln, cur, pd):
-                cur.lines.append(text)
-                if cur.rest_x0 is None:
+                indent = int(round((ln.x0 - left) / (self.body_size * 2)))
+                cur = Para(body, marker=marker, list_level=max(0, indent), x0=ln.x0)
+                prev = ln
+                continue
+
+            if isinstance(cur, Para) and not self._is_break(prev, ln, cur, pd):
+                cur.lines.append(ln.text)
+                if cur.rest_x0 is None and len(cur.lines) == 2:
                     cur.rest_x0 = ln.x0
             else:
-                flush()
-                cur = Para(text, None, 0, ln.x0)
+                if cur is not None:
+                    els.append(cur)
+                cur = Para(ln.text, x0=ln.x0)
             prev = ln
-        flush()
+
+        if cur is not None:
+            els.append(cur)
         return els
 
-    # ------------------------------------------------------------------ #
-    def _assemble(self, page_elements):
+    def _assemble(self, page_elements: list[tuple[PageData, list]]) -> list:
         out = []
         for pd, els in page_elements:
-            marker = PageMark(pd.label) if self.opts.page_markers else None
-            last = next((e for e in reversed(out) if not isinstance(e, PageMark)), None)
-            merged = False
-            if els and last is not None:
-                first = els[0]
-                if isinstance(last, Code) and isinstance(first, Code):
-                    first.lines[0][2] = 0
-                    last.lines.extend(first.lines)
-                    merged = True
-                elif (isinstance(last, Para) and isinstance(first, Para) and first.marker is None
-                      and last.lines and not TERMINAL_RE.search(last.lines[-1])
-                      and not re.search(r"[\"\u201d]$", last.lines[-1])):
-                    last.lines.extend(first.lines)
-                    merged = True
-            if merged:
-                els = els[1:]
-            if marker:
-                out.append(marker)
-            out.extend(els)
+            if self.opts.page_markers:
+                out.append(PageMark(pd.label))
+            for e in els:
+                if isinstance(e, Para) and out and isinstance(out[-1], Para):
+                    last = out[-1]
+                    if not last.marker and not e.marker:
+                        if not TERMINAL_RE.search(last.lines[-1]) and not e.lines[0].startswith(("•", "-", "1.")):
+                            last.lines.extend(e.lines)
+                            continue
+                elif isinstance(e, Code) and out and isinstance(out[-1], Code):
+                    out[-1].lines.extend(e.lines)
+                    continue
+                out.append(e)
         return out
 
-    def _post_process(self, els):
-        result = []
-        for i, e in enumerate(els):
-            if isinstance(e, Heading):
-                e.text = clean_ws(e.text)
-                if len(e.text) > 250:                  # large-print paragraph, not a heading
-                    result.append(Para(e.text))
+    def _post_process(self, elements: list) -> list:
+        out = []
+        for e in elements:
+            if isinstance(e, Para):
+                raw = " ".join(e.lines).strip()
+                if len(raw) <= 2 or (len(raw) <= 4 and re.fullmatch(r"[-–—*#•]+", raw)):
                     continue
-                if e.from_font and re.fullmatch(r"[\divxlcIVXLC.:\-–— ]{1,5}", e.text):
-                    continue                             # decorative chapter number alone
-                if not e.text:
-                    continue
-            if isinstance(e, Code):
-                if not any(t.strip() for _i, t, _b in e.lines):
-                    continue
-            result.append(e)
-        return result
+            out.append(e)
+        return out
 
-    # ------------------------------------------------------------------ #
-    #  Rendering
-    # ------------------------------------------------------------------ #
-    def _join_para(self, lines):
-        out = ""
-        for nxt in lines:
-            nxt = nxt.strip()
+    def _join_para(self, lines: list[str]) -> str:
+        if not lines:
+            return ""
+        out = lines[0]
+        for nxt in lines[1:]:
             if not nxt:
-                continue
-            if not out:
-                out = nxt
                 continue
             if is_rtl_text(out) or is_rtl_text(nxt):
                 out = out + " " + nxt
@@ -1238,16 +1453,65 @@ class BookExtractor:
             if m and n and not out.endswith("--"):
                 a, b = m.group(1).lower(), n.group(1).lower()
                 if f"{a}-{b}" in self.vocab and f"{a}{b}" not in self.vocab:
-                    out = out + nxt                      # genuine compound word: keep hyphen
+                    out = out + nxt
                 else:
-                    out = out[:-1] + nxt                 # soft line-break hyphen: remove
+                    out = out[:-1] + nxt
             elif re.search(r"(?:https?://|www\.)\S*[/._-]$", out) or out.endswith(("\u2014", "/")):
                 out = out + nxt
             else:
                 out = out + " " + nxt
-        return sanitize_text(out.replace("\u00ad", ""))
+        return clean_text(out.replace("\u00ad", ""))
 
-    def render(self, elements, include_header=True):
+    def _find_cover_title(self) -> Optional[str]:
+        candidates = []
+        for pno in range(min(4, len(self.doc))):
+            d = self.doc[pno].get_text("rawdict", flags=TEXT_FLAGS)
+            for b in d.get("blocks", []):
+                if b.get("type") != 0:
+                    continue
+                for l in b.get("lines", []):
+                    txt = clean_ws(" ".join("".join(c["c"] for c in s.get("chars", [])) for s in l.get("spans", [])))
+                    if txt and len(txt) <= 120 and not PAGE_NUM_RE.match(txt):
+                        sz = max((s.get("size", 0) for s in l.get("spans", [])), default=0)
+                        candidates.append((sz, txt))
+        if candidates:
+            candidates.sort(key=lambda c: c[0], reverse=True)
+            return candidates[0][1]
+        return None
+
+    def _header_block(self, rule_len: int) -> list[str]:
+        meta = self.metadata
+        title = repair_metadata(meta.get("title") or "") or self.cover_title or self.path.stem
+        author = repair_metadata(meta.get("author") or "")
+        lines = ["=" * rule_len, f"  {title}"]
+        if author:
+            lines.append(f"  by {author}")
+        lines.append("=" * rule_len)
+
+        if self.opts.contents and self.toc_entries:
+            lines.append("\nTABLE OF CONTENTS")
+            lines.append("-" * min(rule_len, 40))
+            for lvl, t, p in self.toc_entries:
+                if lvl <= self.opts.contents_depth:
+                    pad = "    " * (lvl - 1)
+                    dots = " " + ". " * max(1, (rule_len - len(pad) - len(t) - 8) // 2) + " "
+                    lines.append(f"{pad}{t}{dots}{p + 1}")
+            lines.append("-" * min(rule_len, 40))
+        return lines
+
+    # ------------------------------------------------------------------ #
+    #  Renderers (Text, Markdown, JSONL)
+    # ------------------------------------------------------------------ #
+    def render(self, elements: list, include_header: bool = True) -> str:
+        fmt = self.opts.format.lower()
+        if fmt == "md":
+            return self.render_markdown(elements, include_header=include_header)
+        elif fmt == "jsonl":
+            return self.render_jsonl(elements)
+        else:
+            return self.render_text(elements, include_header=include_header)
+
+    def render_text(self, elements: list, include_header: bool = True) -> str:
         opts = self.opts
         W = opts.width if opts.width and opts.width > 0 else 0
         rule = W or 80
@@ -1315,9 +1579,12 @@ class BookExtractor:
                     body.append((" " * (i - base) + t).rstrip() if t.strip() else "")
                 while body and not body[-1]:
                     body.pop()
+                if opts.strip_line_numbers:
+                    body = strip_listing_numbers(body)
                 blank(1)
                 if opts.code_style == "fence":
-                    out += ["```"] + body + ["```"]
+                    lang = guess_code_language("\n".join(body)) if opts.detect_lang else ""
+                    out += [f"```{lang}"] + body + ["```"]
                 elif opts.code_style == "indent":
                     out += [("    " + x) if x else "" for x in body]
                 else:
@@ -1333,126 +1600,203 @@ class BookExtractor:
                 blank(1)
             prev = e
 
+        # Append Footnotes if configured
+        if self.footnotes_list and opts.footnotes == "section":
+            blank(2)
+            out.append("=" * rule)
+            out.append("FOOTNOTES")
+            out.append("-" * min(rule, 40))
+            for fn in self.footnotes_list:
+                out.append(f"[{fn.marker}] (p. {fn.page}) {fn.text}")
+            blank(1)
+
         text = "\n".join(x.rstrip() for x in out)
         text = re.sub(r"\n{5,}", "\n\n\n\n", text)
-        return sanitize_text(text.strip("\n") + "\n")
+        return clean_text(text.strip("\n") + "\n")
 
-    def _find_cover_title(self) -> str | None:
-        """Scan first 4 pages for dominant headline text on the book cover/title page."""
-        candidates = []
-        for pno in range(min(4, len(self.doc))):
-            d = self.doc[pno].get_text("rawdict", flags=TEXT_FLAGS)
-            for b in d.get("blocks", []):
-                if b.get("type") != 0:
+    def render_markdown(self, elements: list, include_header: bool = True) -> str:
+        out: list[str] = []
+        meta = self.metadata
+        title = repair_metadata(meta.get("title") or "") or self.cover_title or self.path.stem
+        author = repair_metadata(meta.get("author") or "")
+
+        if include_header:
+            out.append(f"# {title}\n")
+            if author:
+                out.append(f"**Author:** {author}\n")
+            if self.opts.contents and self.toc_entries:
+                out.append("## Table of Contents\n")
+                for lvl, t, p in self.toc_entries:
+                    if lvl <= self.opts.contents_depth:
+                        pad = "  " * (lvl - 1)
+                        out.append(f"{pad}* {t} *(p. {p + 1})*")
+                out.append("\n---\n")
+
+        for e in elements:
+            if isinstance(e, Heading):
+                hashes = "#" * max(1, min(6, e.level + (0 if include_header else 0)))
+                out.append(f"\n{hashes} {e.text}\n")
+            elif isinstance(e, Para):
+                text = self._join_para(e.lines)
+                if not text:
                     continue
-                for l in b.get("lines", []):
-                    txt = " ".join("".join(c["c"] for c in s.get("chars", [])) for s in l.get("spans", [])).strip()
-                    txt = clean_ws(txt)
-                    if not txt or len(txt) < 3 or len(txt) > 120:
-                        continue
-                    if re.search(r"copyright|isbn|all rights|version|http|\.com|edition|license", txt, re.I):
-                        continue
-                    sz = max((float(s.get("size", 0)) for s in l.get("spans", [])), default=0)
-                    candidates.append((sz, pno, l["bbox"][1], txt))
-        if not candidates:
-            return None
-        candidates.sort(key=lambda c: (-c[0], c[1], c[2]))
-        top_sz = candidates[0][0]
-        title = candidates[0][3]
-        top_pno = candidates[0][1]
-        top_y = candidates[0][2]
-        for sz, pno, y, txt in candidates[1:]:
-            if pno == top_pno and 0 < y - top_y < 80 and sz >= top_sz * 0.45 and sz >= 14:
-                if not re.search(r"^by\b|^author\b", txt, re.I) and len(title) + len(txt) < 90:
-                    title = f"{title}: {txt}"
-                break
-        return sanitize_text(title) if title else None
-
-    def book_title(self):
-        meta = self.doc.metadata or {}
-        t = sanitize_text(clean_ws(meta.get("title") or ""))
-        stem_norm = norm_key(self.path.stem)
-        t_norm = norm_key(t)
-        is_bad = (
-            not t or len(t) < 3 or
-            (t.isupper() and len(t) <= 25) or
-            t_norm == stem_norm or
-            re.search(r"untitled|microsoft word|^document\d*$|\.(indd|docx?|pdf|tex|qxd|dvi)$", t, re.I)
-        )
-        if is_bad:
-            cover = self._find_cover_title()
-            if cover:
-                return cover
-            t = re.sub(r"[_]+", " ", self.path.stem).strip()
-        return sanitize_text(t)
-
-    def _header_block(self, rule):
-        meta = self.doc.metadata or {}
-        lines = ["=" * rule]
-        lines += textwrap.wrap(self.book_title().upper(), rule) or [""]
-        author = sanitize_text(clean_ws(meta.get("author") or ""))
-        if author:
-            lines.append(f"by {author}")
-        lines.append("=" * rule)
-        lines.append(f"Source file : {self.path.name}")
-        lines.append(f"Pages       : {len(self.pages)}" + (f" (of {self.doc.page_count})" if len(self.pages) != self.doc.page_count else ""))
-        lines.append(f"Extracted   : {datetime.now():%Y-%m-%d %H:%M} with pdf_book_to_text.py v{__version__}")
-        lines.append("=" * rule)
-        if self.opts.contents:
-            toc = self._contents_lines(rule)
-            if toc:
-                lines += ["", "", "TABLE OF CONTENTS", "-----------------", ""] + toc + ["", "=" * rule]
-        return lines
-
-    def _contents_lines(self, rule):
-        depth = self.opts.contents_depth
-        items = []
-        if self.toc_used:
-            labels = {pd.pno: pd.label for pd in self.pages}
-            for lvl, title, pno in self.toc_entries:
-                if lvl <= depth and pno in labels:
-                    items.append((lvl, title, labels[pno]))
-        else:
-            for e in self.elements:
-                if isinstance(e, Heading) and e.level <= min(depth, 2):
-                    items.append((e.level, e.text, ""))
-        out = []
-        for lvl, title, page in items:
-            ind = "    " * (lvl - 1)
-            left = f"{ind}{title}"
-            if page:
-                room = rule - len(left) - len(page) - 2
-                if room >= 3:
-                    out.append(f"{left} {'.' * room} {page}")
+                if e.marker:
+                    pad = "  " * e.list_level
+                    mk = e.marker if e.marker.startswith(("1", "2", "3", "4", "5", "6", "7", "8", "9")) else "-"
+                    out.append(f"{pad}{mk} {text}")
                 else:
-                    out.append(f"{left}  {page}")
-            else:
-                out.append(left)
-        return out
+                    out.append(f"\n{text}\n")
+            elif isinstance(e, Code):
+                rows = [(i, t) for i, t, _b in e.lines]
+                base = min((i for i, t in rows if t.strip()), default=0)
+                body = []
+                for i, t, b in e.lines:
+                    body += [""] * b
+                    if self.opts.fix_code_quotes:
+                        t = t.translate(CODE_TRANS)
+                    body.append((" " * (i - base) + t).rstrip() if t.strip() else "")
+                while body and not body[-1]:
+                    body.pop()
+                if self.opts.strip_line_numbers:
+                    body = strip_listing_numbers(body)
+                code_text = "\n".join(body)
+                lang = guess_code_language(code_text) if self.opts.detect_lang else ""
+                out.append(f"\n```{lang}\n{code_text}\n```\n")
+            elif isinstance(e, Pre):
+                out.append("\n```\n" + "\n".join(x.rstrip() for x in e.lines) + "\n```\n")
+            elif isinstance(e, PageMark):
+                out.append(f"\n<!-- Page {e.label} -->\n")
 
-    def chapters(self):
-        """Split elements at level-1 headings -> list of (title, elements)."""
-        parts, cur_title, cur = [], "Front Matter", []
+        if self.footnotes_list and self.opts.footnotes != "drop":
+            out.append("\n## Footnotes\n")
+            for fn in self.footnotes_list:
+                out.append(f"[^{fn.marker}]: (p. {fn.page}) {fn.text}")
+
+        text = "\n".join(out)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return clean_text(text.strip("\n") + "\n")
+
+    def render_jsonl(self, elements: list) -> str:
+        records = []
+        meta = self.metadata
+        book_title = repair_metadata(meta.get("title") or "") or self.cover_title or self.path.stem
+        curr_chapter = ""
+        curr_section = ""
+        item_id = 1
+
+        for e in elements:
+            if isinstance(e, Heading):
+                if e.level == 1:
+                    curr_chapter = e.text
+                    curr_section = ""
+                elif e.level == 2:
+                    curr_section = e.text
+                records.append({
+                    "id": f"{self.path.stem}_{item_id:05d}",
+                    "book": book_title,
+                    "type": "heading",
+                    "level": e.level,
+                    "text": e.text,
+                    "chapter": curr_chapter,
+                    "section": curr_section,
+                })
+                item_id += 1
+            elif isinstance(e, Para):
+                text = self._join_para(e.lines)
+                if not text:
+                    continue
+                records.append({
+                    "id": f"{self.path.stem}_{item_id:05d}",
+                    "book": book_title,
+                    "type": "paragraph",
+                    "text": text,
+                    "chapter": curr_chapter,
+                    "section": curr_section,
+                    "list_marker": e.marker,
+                    "char_count": len(text),
+                    "token_estimate": max(1, len(text.split())),
+                })
+                item_id += 1
+            elif isinstance(e, Code):
+                rows = [(i, t) for i, t, _b in e.lines]
+                base = min((i for i, t in rows if t.strip()), default=0)
+                body = []
+                for i, t, b in e.lines:
+                    body += [""] * b
+                    if self.opts.fix_code_quotes:
+                        t = t.translate(CODE_TRANS)
+                    body.append((" " * (i - base) + t).rstrip() if t.strip() else "")
+                while body and not body[-1]:
+                    body.pop()
+                if self.opts.strip_line_numbers:
+                    body = strip_listing_numbers(body)
+                code_text = "\n".join(body)
+                if not code_text.strip():
+                    continue
+                lang = guess_code_language(code_text) if self.opts.detect_lang else ""
+                records.append({
+                    "id": f"{self.path.stem}_{item_id:05d}",
+                    "book": book_title,
+                    "type": "code",
+                    "language": lang,
+                    "text": code_text,
+                    "chapter": curr_chapter,
+                    "section": curr_section,
+                    "char_count": len(code_text),
+                    "token_estimate": max(1, len(code_text.split())),
+                })
+                item_id += 1
+            elif isinstance(e, Pre):
+                pre_text = "\n".join(x.rstrip() for x in e.lines)
+                if not pre_text.strip():
+                    continue
+                records.append({
+                    "id": f"{self.path.stem}_{item_id:05d}",
+                    "book": book_title,
+                    "type": "pre",
+                    "text": pre_text,
+                    "chapter": curr_chapter,
+                    "section": curr_section,
+                })
+                item_id += 1
+
+        return "\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n"
+
+    def stats(self) -> Counter:
+        c = Counter()
         for e in self.elements:
-            if isinstance(e, Heading) and e.level == 1:
-                if any(not isinstance(x, PageMark) for x in cur):
-                    parts.append((cur_title, cur))
-                cur_title, cur = e.text, [e]
-            else:
-                cur.append(e)
-        if any(not isinstance(x, PageMark) for x in cur):
-            parts.append((cur_title, cur))
-        return parts
-
-    def stats(self):
-        c = Counter(type(e).__name__ for e in self.elements)
+            c[type(e).__name__] += 1
         return c
 
 
 # --------------------------------------------------------------------------- #
-#  CLI
+#  Chapter splitting
 # --------------------------------------------------------------------------- #
-def parse_page_ranges(spec: str, n: int):
+def split_by_chapters(extractor: BookExtractor, elements: list) -> list[tuple[str, list]]:
+    chapters = []
+    curr_title = "Front Matter"
+    curr_els = []
+    idx = 0
+    for e in elements:
+        if isinstance(e, Heading) and e.level == 1:
+            if curr_els:
+                chapters.append((f"{idx:02d}_{slugify(curr_title)}", curr_els))
+                idx += 1
+            curr_title = e.text
+            curr_els = [e]
+        else:
+            curr_els.append(e)
+    if curr_els:
+        chapters.append((f"{idx:02d}_{slugify(curr_title)}", curr_els))
+    return chapters
+
+
+def slugify(s: str) -> str:
+    s = norm_key(s)
+    return s[:40] if s else "chapter"
+
+
+def parse_page_ranges(spec: str, total_pages: int) -> list[int]:
     pages = set()
     for part in spec.split(","):
         part = part.strip()
@@ -1460,89 +1804,119 @@ def parse_page_ranges(spec: str, n: int):
             continue
         if "-" in part:
             a, b = part.split("-", 1)
-            a = int(a) if a.strip() else 1
-            b = int(b) if b.strip() else n
+            start = int(a) if a else 1
+            end = int(b) if b else total_pages
+            for p in range(max(1, start), min(total_pages, end) + 1):
+                pages.add(p - 1)
         else:
-            a = b = int(part)
-        pages.update(range(max(1, a) - 1, min(n, b)))
+            p = int(part)
+            if 1 <= p <= total_pages:
+                pages.add(p - 1)
     return sorted(pages)
 
 
-def safe_filename(s: str, maxlen=70) -> str:
-    s = sanitize_text(s)
-    s = re.sub(r"[\\/:*?\"<>|\x00-\x1f\ufffd]+", " ", s)
-    return clean_ws(s)[:maxlen].rstrip(". ") or "untitled"
+# --------------------------------------------------------------------------- #
+#  Execution, File Processing & CLI
+# --------------------------------------------------------------------------- #
+def process_file(pdf_path: Path, out_path: Optional[Path], opts: Options) -> bool:
+    pdf_path = Path(pdf_path)
+    if out_path is None and not opts.stdout:
+        ext = ".md" if opts.format == "md" else (".jsonl" if opts.format == "jsonl" else ".txt")
+        out_path = pdf_path.with_suffix(ext)
 
+    if opts.skip_existing and out_path and out_path.exists() and out_path.stat().st_size > 0:
+        log(f"  ⏭ Skipping {pdf_path.name} (output exists: {out_path.name})", opts)
+        return True
 
-def process_file(pdf: Path, out_path: Path | None, opts: Options) -> bool:
-    log(f"\n📖  {pdf}", opts)
+    log(f"Processing: {pdf_path.name}", opts)
+    ex = BookExtractor(pdf_path, opts)
     try:
-        ex = BookExtractor(pdf, opts)
-        ex.run()
+        elements = ex.run()
     except Exception as exc:
-        log(f"  ✗ Failed: {exc}", opts)
+        print(f"  ✗ Failed: {exc}", file=sys.stderr)
         return False
 
-    if out_path is None:
-        out_path = pdf.with_suffix(".txt")
-    elif out_path.is_dir():
-        out_path = out_path / (pdf.stem + ".txt")
+    rendered = ex.render(elements, include_header=True)
+
+    if opts.stdout:
+        sys.stdout.write(rendered)
+        sys.stdout.flush()
+        return True
+
+    # Encoding: default write BOM unless --no-bom is passed
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    text = ex.render(ex.elements)
-    out_path.write_text(text, encoding="utf-8-sig")
+    encoding = "utf-8" if opts.no_bom else "utf-8-sig"
+    with open(out_path, "w", encoding=encoding, errors="replace") as f:
+        f.write(rendered)
 
     if opts.split_chapters:
-        folder = out_path.with_name(out_path.stem + "_chapters")
-        folder.mkdir(exist_ok=True)
-        for i, (title, els) in enumerate(ex.chapters()):
-            fn = folder / f"{i:02d} - {safe_filename(title)}.txt"
-            fn.write_text(ex.render(els, include_header=False), encoding="utf-8-sig")
+        folder = out_path.parent / (out_path.stem + "_chapters")
+        folder.mkdir(parents=True, exist_ok=True)
+        ext = ".md" if opts.format == "md" else (".jsonl" if opts.format == "jsonl" else ".txt")
+        for slug, ch_elements in split_by_chapters(ex, elements):
+            ch_text = ex.render(ch_elements, include_header=False)
+            ch_file = folder / f"{slug}{ext}"
+            with open(ch_file, "w", encoding=encoding, errors="replace") as f:
+                f.write(ch_text)
         log(f"  ✓ Chapters written to: {folder}", opts)
 
     st = ex.stats()
     log(f"  ✓ Saved: {out_path}", opts)
     log(f"    {len(ex.pages)} pages | {st.get('Heading', 0)} headings | {st.get('Para', 0)} paragraphs | "
-        f"{st.get('Code', 0)} code blocks | {len(text):,} chars | "
+        f"{st.get('Code', 0)} code blocks | {len(rendered):,} chars | "
         f"headings from {'PDF bookmarks' if ex.toc_used else 'font analysis'} | {ex.elapsed:.1f}s", opts)
     for w in ex.warnings:
         log(f"  ⚠ {w}", opts)
-    ex.doc.close()
     return True
 
 
-def build_arg_parser():
+def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="pdf_book_to_text.py",
-        description="Extract clean, structured text (chapters, paragraphs, code listings) from PDF books.",
+        prog="pdf-book-to-text",
+        description="Extract clean, structured text, Markdown, and RAG chunks from PDF books.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
                "  %(prog)s book.pdf\n"
-               "  %(prog)s book.pdf -o book.txt --width 0\n"
-               "  %(prog)s ~/Books -r --split-chapters\n"
+               "  %(prog)s book.pdf --format md -o book.md\n"
+               "  %(prog)s book.pdf --format jsonl -o book.jsonl\n"
+               "  %(prog)s ~/Books/ -r -j 4 --skip-existing\n"
                "  %(prog)s scanned.pdf --ocr --ocr-lang eng\n",
     )
     p.add_argument("inputs", nargs="*", help="PDF file(s) or folder(s). If omitted you will be asked.")
-    p.add_argument("-o", "--output", help="Output .txt file (single input) or output folder.")
+    p.add_argument("-o", "--output", help="Output file (single input) or destination folder (batch).")
+    p.add_argument("-f", "--format", choices=["txt", "md", "jsonl"], default="txt",
+                   help="Output format: txt (plain text), md (Markdown with ```lang), jsonl (RAG chunks). Default: txt.")
     p.add_argument("-r", "--recursive", action="store_true", help="Search folders recursively for PDFs.")
     p.add_argument("-w", "--width", type=int, default=100,
-                   help="Wrap paragraphs at N characters (0 = one line per paragraph). Code is never wrapped. Default 100.")
+                   help="Wrap paragraphs at N characters (0 = no wrap). Code is never wrapped. Default: 100.")
     p.add_argument("--code-style", choices=["fence", "indent", "plain"], default="fence",
-                   help="How code blocks are marked: ``` fences (default), 4-space indent, or plain.")
+                   help="Code listing style in plain text format: ``` fence (default), 4-space indent, or plain.")
+    p.add_argument("--no-detect-lang", dest="detect_lang", action="store_false",
+                   help="Disable automatic programming language detection for code fences.")
+    p.add_argument("--no-strip-line-numbers", dest="strip_line_numbers", action="store_false",
+                   help="Do not strip leading line numbers from code listings.")
+    p.add_argument("--footnotes", choices=["section", "inline", "drop"], default="section",
+                   help="Footnote handling: section (append at end), inline, or drop. Default: section.")
+    p.add_argument("-j", "--jobs", type=int, default=1,
+                   help="Number of parallel worker processes for batch extraction. Default: 1.")
+    p.add_argument("--skip-existing", action="store_true", help="Skip files that already have target output.")
+    p.add_argument("--no-bom", action="store_true", help="Write UTF-8 without BOM (recommended for Unix pipelines).")
+    p.add_argument("--stdout", action="store_true", help="Output text to standard output instead of writing a file.")
     p.add_argument("--pages", help="Page range(s) to extract, e.g. '1-50' or '10-20,25,40-'.")
     p.add_argument("--page-markers", action="store_true", help="Insert [Page N] markers.")
-    p.add_argument("--no-contents", dest="contents", action="store_false", help="Do not write a table of contents at the top.")
-    p.add_argument("--contents-depth", type=int, default=3, help="Depth of the generated table of contents (default 3).")
+    p.add_argument("--no-contents", dest="contents", action="store_false", help="Do not write table of contents at the top.")
+    p.add_argument("--contents-depth", type=int, default=3, help="Depth of generated table of contents (default 3).")
     p.add_argument("--keep-headers", dest="strip_headers", action="store_false",
                    help="Keep running headers/footers and page numbers.")
     p.add_argument("--columns", choices=["auto", "1", "2"], default="auto", help="Column layout detection (default auto).")
-    p.add_argument("--tables", action="store_true", help="Detect ruled tables and render them as ASCII grids (slower).")
+    p.add_argument("--tables", action="store_true", help="Detect ruled tables and render them as ASCII/Markdown grids.")
     p.add_argument("--figures", action="store_true", help="Insert [Figure] placeholders where images are.")
     p.add_argument("--ocr", action="store_true", help="OCR scanned pages (requires Tesseract installed).")
-    p.add_argument("--ocr-lang", default="eng", help="Tesseract language(s), e.g. 'eng' or 'eng+deu'.")
+    p.add_argument("--ocr-lang", default="eng", help="Tesseract language(s), e.g. 'eng' or 'ara'.")
     p.add_argument("--password", help="Password for encrypted PDFs.")
-    p.add_argument("--split-chapters", action="store_true", help="Also write one .txt per chapter into <name>_chapters/.")
+    p.add_argument("--split-chapters", action="store_true", help="Also write one file per chapter into <name>_chapters/.")
     p.add_argument("--ignore-bookmarks", dest="use_bookmarks", action="store_false",
-                   help="Ignore the PDF outline; detect headings from fonts only.")
+                   help="Ignore PDF outline; detect headings from fonts only.")
     p.add_argument("--keep-code-quotes", dest="fix_code_quotes", action="store_false",
                    help="Do not convert curly quotes/dashes to ASCII inside code.")
     p.add_argument("--mark-inline-code", action="store_true", help="Wrap inline monospace words in `backticks`.")
@@ -1551,7 +1925,7 @@ def build_arg_parser():
     return p
 
 
-def collect_pdfs(inputs, recursive):
+def collect_pdfs(inputs: list[str], recursive: bool) -> list[Path]:
     found = []
     for raw in inputs:
         s = raw.strip().strip("'\"")
@@ -1561,9 +1935,9 @@ def collect_pdfs(inputs, recursive):
         if not path.exists():
             parent = path.parent
             if parent.is_dir():
-                clean_target = sanitize_text(unicodedata.normalize("NFC", path.name)).replace("\ufffd", "").strip()
+                clean_target = clean_text(unicodedata.normalize("NFC", path.name)).replace("\ufffd", "").strip()
                 for cand in parent.glob("*.pdf"):
-                    clean_cand = sanitize_text(unicodedata.normalize("NFC", cand.name)).replace("\ufffd", "").strip()
+                    clean_cand = clean_text(unicodedata.normalize("NFC", cand.name)).replace("\ufffd", "").strip()
                     if clean_target and clean_cand == clean_target:
                         path = cand
                         break
@@ -1577,39 +1951,80 @@ def collect_pdfs(inputs, recursive):
     return found
 
 
-def main(argv=None):
+def _worker_task(args_tuple: tuple[Path, Optional[Path], Options]) -> bool:
+    pdf, target, opts = args_tuple
+    return process_file(pdf, target, opts)
+
+
+def main(argv: Optional[list[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
     inputs = args.inputs
     if not inputs:
         try:
-            s = input("Enter the path to a PDF book (or a folder of PDFs): ").strip()
+            s = input("Enter path to a PDF book (or folder): ").strip()
         except (EOFError, KeyboardInterrupt):
             return 1
         if not s:
             return 1
         inputs = [s]
+
     pdfs = collect_pdfs(inputs, args.recursive)
     if not pdfs:
         print("No PDF files found.", file=sys.stderr)
         return 1
 
     opts = Options(
-        width=args.width, code_style=args.code_style, pages=args.pages, page_markers=args.page_markers,
-        contents=args.contents, contents_depth=args.contents_depth, strip_headers=args.strip_headers,
-        columns=args.columns, tables=args.tables, figures=args.figures, ocr=args.ocr, ocr_lang=args.ocr_lang,
-        password=args.password, split_chapters=args.split_chapters, use_bookmarks=args.use_bookmarks,
-        fix_code_quotes=args.fix_code_quotes, mark_inline_code=args.mark_inline_code, quiet=args.quiet,
+        format=args.format, width=args.width, code_style=args.code_style, pages=args.pages,
+        page_markers=args.page_markers, contents=args.contents, contents_depth=args.contents_depth,
+        strip_headers=args.strip_headers, columns=args.columns, tables=args.tables, figures=args.figures,
+        ocr=args.ocr, ocr_lang=args.ocr_lang, password=args.password, split_chapters=args.split_chapters,
+        use_bookmarks=args.use_bookmarks, fix_code_quotes=args.fix_code_quotes,
+        mark_inline_code=args.mark_inline_code, detect_lang=args.detect_lang,
+        strip_line_numbers=args.strip_line_numbers, footnotes=args.footnotes,
+        no_bom=args.no_bom, stdout=args.stdout, jobs=args.jobs,
+        skip_existing=args.skip_existing, quiet=args.quiet,
     )
-    out = Path(args.output).expanduser() if args.output else None
-    if out is not None and len(pdfs) > 1:
-        out.mkdir(parents=True, exist_ok=True)
 
-    ok = 0
+    out = Path(args.output).expanduser() if args.output else None
+    ext = ".md" if opts.format == "md" else (".jsonl" if opts.format == "jsonl" else ".txt")
+
+    # Common base directory calculation for subfolder preservation
+    try:
+        common_base = Path(os.path.commonpath([p.parent for p in pdfs]))
+    except Exception:
+        common_base = None
+
+    tasks = []
     for pdf in pdfs:
         target = out
-        if out is not None and len(pdfs) > 1:
-            target = out / (pdf.stem + ".txt")
-        ok += process_file(pdf, target, opts)
+        if out is not None and (out.is_dir() or len(pdfs) > 1 or (not out.suffix and not out.exists())):
+            if common_base and common_base != pdf.parent:
+                try:
+                    rel = pdf.relative_to(common_base)
+                    target = out / rel.with_suffix(ext)
+                except ValueError:
+                    target = out / (pdf.stem + ext)
+            else:
+                target = out / (pdf.stem + ext)
+        tasks.append((pdf, target, opts))
+
+    ok = 0
+    if opts.jobs > 1 and len(tasks) > 1 and not opts.stdout:
+        log(f"Starting parallel extraction using {opts.jobs} workers...", opts)
+        with concurrent.futures.ProcessPoolExecutor(max_workers=min(opts.jobs, len(tasks))) as pool:
+            futures = {pool.submit(_worker_task, t): t[0] for t in tasks}
+            for fut in concurrent.futures.as_completed(futures):
+                p = futures[fut]
+                try:
+                    if fut.result():
+                        ok += 1
+                except Exception as exc:
+                    print(f"  ✗ {p.name}: {exc}", file=sys.stderr)
+    else:
+        for t in tasks:
+            if _worker_task(t):
+                ok += 1
+
     if len(pdfs) > 1:
         log(f"\nDone: {ok}/{len(pdfs)} file(s) converted.", opts)
     return 0 if ok == len(pdfs) else 2

@@ -1,15 +1,16 @@
 <div align="center">
 
-# 📖 PDF Book to Text Extractor
+# 📖 PDF Book to Text Extractor v2.0
 
-**Extract clean, publication-grade plain text from PDF books — specially tuned for programming and technical literature.**
+**Extract clean, publication-grade Plain Text, GitHub Markdown, and RAG JSONL chunks from PDF books — specially tuned for programming and technical literature.**
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg?style=flat-square)](https://www.python.org/downloads/)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg?style=flat-square)](https://www.python.org/downloads/)
 [![License: Non-Commercial / Dual](https://img.shields.io/badge/License-Non--Commercial%20%2F%20Dual-orange.svg?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg?style=flat-square)](#installation)
+[![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg?style=flat-square)](tests/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](#contributing)
 
-[Quick Start](#-quick-start) • [Why This Tool?](#-why-standard-tools-fail-on-programming-books) • [CLI Reference](#-cli-options-reference) • [Recipes](#-common-recipes) • [Architecture](#-architecture) • [Full Guide](GUIDE.md)
+[Quick Start](#-quick-start) • [The Solution](#-the-problem-vs-the-solution) • [CLI Reference](#-cli-options-reference) • [Recipes](#-common-recipes) • [Architecture](#-architecture) • [Full Guide](GUIDE.md)
 
 </div>
 
@@ -17,18 +18,18 @@
 
 ## ⚡ The Problem vs. The Solution
 
-Standard PDF extraction tools (`pdftotext`, `pypdf`, `pdfplumber`) treat technical books like plain text documents. This breaks code listings, loses indentation, inserts running headers into functions, and destroys chapter hierarchies.
+Standard PDF extraction tools (`pdftotext`, `pypdf`, `pdfplumber`) treat technical books like simple plain text documents. This breaks code listings, loses indentation, injects running headers into the middle of functions, corrupts directory tree characters, and destroys chapter hierarchies.
 
 <p align="center">
-  <img src="docs/images/before_after_comparison.svg" alt="Standard Extractors vs pdf_book_to_text.py" width="100%" />
+  <img src="docs/images/before_after_comparison.svg" alt="Standard Extractors vs pdf-book-to-text" width="100%" />
 </p>
 
-````carousel
+### ❌ Standard Tool Output (`pdftotext` / naive extractors):
 ```python
-# ❌ Standard Tool Output (pdftotext / naive extractors):
 # - Indentation is lost or scrambled
-# - Running header injected right into the code!
+# - Running header injected right into the function!
 # - Curly quotes break Python syntax
+# - Directory tree lines corrupt into '%'
 
 def calculate_wholesale(copies):
  wholesale_price = 24.95 * 0.60
@@ -38,13 +39,14 @@ Chapter 3. Functions 19
 
 print(‘Total cost:’, calculate_wholesale(60))
 ```
-<!-- slide -->
+
+### ✅ `pdf-book-to-text` Output (v2.0):
 ```python
-# ✅ pdf_book_to_text.py Output:
-# - Clean markdown fenced block
-# - Exact 4-space indentation preserved
+# - Automatic language-tagged code block (```python)
+# - Exact 4-space indentation and alignment preserved
 # - Running headers & footers automatically stripped
-# - Curly quotes converted to valid ASCII syntax
+# - Curly quotes normalized to valid ASCII syntax
+# - Box-drawing characters (├──, └──) kept 100% intact
 
 def calculate_wholesale(copies):
     wholesale_price = 24.95 * 0.60
@@ -53,26 +55,26 @@ def calculate_wholesale(copies):
 
 print('Total cost:', calculate_wholesale(60))
 ```
-````
 
 ---
 
 ## ✨ Features
 
-* **Authoritative Chapter Hierarchy**: Uses PDF bookmarks (Table of Contents) as ground truth, formatting headings with clean underlines (`====`, `----`, `~~~~`).
-* **Preserves Section Numbers**: Retains printed numbering (`3.1 Function calls`, `3.2 Math functions`) that typical outline parsers drop.
+* **Multi-Format Export**:
+  * **Plain Text (`.txt`)**: Underlined chapter headings (`====`, `----`, `~~~~`), preserved indentation, and ASCII tables.
+  * **GitHub Markdown (`.md`)**: Proper `#` heading hierarchy, fenced code blocks with detected language tags (```` ```python ````, ```` ```bash ````, ```` ```sql ````), and GFM tables.
+  * **RAG JSONL (`.jsonl`)**: Structured chunk stream with book metadata, chapter/section hierarchy, page numbers, element types, and token estimates ready for vector databases (Chroma, Qdrant, Milvus, LangChain, LlamaIndex).
+* **Authoritative Chapter Hierarchy**: Uses PDF bookmarks (Table of Contents) as ground truth, retaining printed section numbering (`3.1 Function calls`, `3.2 Math functions`) that typical outline parsers drop.
 * **Dual-Tier Monospace & Code Detection**:
   * Regex matching for popular monospace families (`Courier`, `Consolas`, `JetBrains Mono`, `Fira Code`, `M+`, `DejaVu`, etc.).
   * **Mathematical character-metric analysis**: Measures Latin glyph width variance. If character advances are uniform across diverse letters (`'i'` vs `'m'`), it is classified as code—detecting custom/renamed fonts with 100% accuracy.
-* **Intelligent Indentation Reconstruction**: Computes code indentation and multi-column alignment from character bounding boxes, keeping tabs, nested loops, and ASCII diagrams aligned.
+  * **Proportional Font Code Detection**: Detects code snippets even when printed in proportional body fonts (e.g. 13pt Garamond in *Python Hacking Essentials*) using statistical style-frequency profiling and syntax pattern scoring.
+* **Code Listing Line Number Stripping**: Automatically detects and strips printed listing line numbers (`1  import os`) while preserving code indentation.
+* **Clean Text & Box-Drawing Integrity**: Preserves box-drawing tree characters (`├──`, `└──`, `│`, `─` U+2500) and HTML entities (`&lt;div&gt;`) without corruption.
+* **Full Multilingual & Arabic (RTL) Support**: Native Right-to-Left (RTL) reading order, correct BiDi span sorting, proper sentence punctuation placement, connected Arabic letter preservation, and Unicode NFKC outline matching for Arabic, Hebrew, Urdu, and Cyrillic.
 * **Margin Band Header/Footer Removal**: Detects recurring top and bottom margin coordinates across hundreds of pages, removing page numbers and alternating chapter headers without losing text.
-* **Continuous Code Stitching**: Re-joins code blocks that span across physical page breaks.
-* **Syntax Normalization**: Straightens curly quotes (`“`, `”`, `‘`, `’`) and hyphens (`−`, `—`) into valid ASCII code characters (`"`, `'`, `-`).
-* **Smart De-Hyphenation**: Reconstructs broken lines while checking an internal book-specific vocabulary to preserve true compound words.
-* **Full Multilingual & Arabic (RTL) Support**: Preserves natural Right-to-Left (RTL) reading order and span continuity for Arabic, Hebrew, and Persian PDFs without word inversion.
-* **Mojibake & Encoding Immunity**: Sanitizes corrupt PDF bookmarks (null bytes, byte-swapped UTF-16) and outputs UTF-8 with BOM (`utf-8-sig`), completely preventing text editors (like Windows Notepad) from misinterpreting English/Arabic as Chinese characters.
-* **Chapter Splitting (`--split-chapters`)**: Exports both the full text and a folder of numbered chapter files (`01 - Preface.txt`, `02 - Chapter 1.txt`).
-* **LLM & RAG Friendly**: Optional single-line paragraph mode (`-w 0`) with page markers (`--page-markers`) for vector databases and embedding pipelines.
+* **Footnote Relocation**: Identifies small bottom-of-page notes and relocates them to section ends, preventing them from corrupting sentence reflow across page boundaries.
+* **High Performance Parallel Batch**: Multi-core extraction (`-j N`) with `--skip-existing` caching for processing large libraries.
 
 ---
 
@@ -82,34 +84,40 @@ print('Total cost:', calculate_wholesale(60))
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/pdf-book-to-text.git
+git clone https://github.com/7AZZANI/pdf-book-to-text.git
 cd pdf-book-to-text
 
 # Create and activate a virtual environment
 python3 -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Install the package and dependencies
+pip install -e .
 ```
 
 ### 2. Basic Usage
 
 Extract any PDF book into a `.txt` file:
-
 ```bash
-python3 pdf_book_to_text.py "path/to/my_book.pdf"
+pdf-book-to-text book.pdf
+# Output: book.txt next to the PDF
 ```
-> Output will be created next to the PDF as `my_book.txt`.
 
-<p align="center">
-  <img src="docs/images/cli_demo.svg" alt="Terminal Run Walkthrough" width="100%" />
-</p>
-
-Or run it **interactively** (no flags needed):
+Extract to **GitHub-Flavored Markdown** with tagged code blocks:
 ```bash
-python3 pdf_book_to_text.py
-# Prompts: Enter the path to a PDF book (or a folder of PDFs):
+pdf-book-to-text book.pdf --format md
+# Output: book.md
+```
+
+Extract to **RAG JSONL Chunks** for vector search and LLMs:
+```bash
+pdf-book-to-text book.pdf --format jsonl
+# Output: book.jsonl
+```
+
+Or run interactively (prompts for file or folder):
+```bash
+pdf-book-to-text
 ```
 
 ---
@@ -117,46 +125,56 @@ python3 pdf_book_to_text.py
 ## 🛠️ Common Recipes
 
 ### 📚 Recipe 1: Split into Chapter Files (for Obsidian, Notion, or e-Readers)
-Creates the full text plus a `book_chapters/` folder with individual chapter files:
+Creates the main file plus a `<book>_chapters/` folder with individual chapter files:
 ```bash
-python3 pdf_book_to_text.py book.pdf --split-chapters
+pdf-book-to-text book.pdf --format md --split-chapters
 ```
-
-<p align="center">
-  <img src="docs/images/chapter_splitting_demo.svg" alt="Chapter Splitting Demo" width="100%" />
-</p>
-
 ```text
 book_chapters/
-  ├── 00 - Front Matter.txt
-  ├── 01 - Preface.txt
-  ├── 02 - Chapter 1: The way of the program.txt
-  ├── 03 - Chapter 2: Variables and expressions.txt
+  ├── 00_frontmatter.md
+  ├── 01_preface.md
+  ├── 02_chapter_1_network_reconnaissance.md
+  ├── 03_chapter_2_socket_programming.md
   └── ...
 ```
 
-### 🤖 Recipe 2: Prepare Clean Text for LLMs & RAG Pipelines
-Disables paragraph line wrapping (one continuous line per paragraph) and inserts page markers for citation grounding:
+### 🤖 Recipe 2: Vector Search & RAG Embeddings (JSONL)
+Extracts structured chunks with chapter path and page metadata:
 ```bash
-python3 pdf_book_to_text.py book.pdf -w 0 --page-markers -o llm_corpus.txt
+pdf-book-to-text book.pdf --format jsonl -o knowledge_base.jsonl
 ```
 
-### 📁 Recipe 3: Batch Convert an Entire Library
-Recursively process every PDF in a directory:
+Example JSONL record:
+```json
+{
+  "id": "book_00142",
+  "book": "Python for Offensive PenTest",
+  "type": "code",
+  "language": "python",
+  "text": "import socket\ns = socket.socket(socket.AF_INET, socket.SOCK_STREAM)",
+  "chapter": "Warming up – Your First Shell",
+  "section": "TCP reverse shell",
+  "char_count": 84,
+  "token_estimate": 14
+}
+```
+
+### 📁 Recipe 3: High-Speed Parallel Batch Conversion
+Recursively process an entire library across 4 CPU cores, skipping previously converted books:
 ```bash
-python3 pdf_book_to_text.py ~/Books/ -r -o ~/ExtractedText/
+pdf-book-to-text ~/Books/ -r -j 4 --format md -o ~/MarkdownBooks/ --skip-existing
 ```
 
 ### 📑 Recipe 4: Extract Specific Page Ranges
 Test a sample range or extract specific chapters:
 ```bash
-python3 pdf_book_to_text.py book.pdf --pages 10-50,85,120-140
+pdf-book-to-text book.pdf --pages 10-50,85,120-140 --format md
 ```
 
 ### 🖼️ Recipe 5: Scanned PDFs (OCR Fallback)
 Extract text from scanned pages using Tesseract:
 ```bash
-python3 pdf_book_to_text.py scanned_book.pdf --ocr --ocr-lang eng
+pdf-book-to-text scanned_book.pdf --ocr --ocr-lang eng
 ```
 
 ---
@@ -166,21 +184,29 @@ python3 pdf_book_to_text.py scanned_book.pdf --ocr --ocr-lang eng
 | Flag | Default | Description |
 | :--- | :---: | :--- |
 | `inputs` | *Interactive* | PDF file(s) or directory paths to process. |
-| `-o`, `--output` | `<name>.txt` | Destination text file or folder. |
+| `-o`, `--output` | `<name>.<ext>` | Destination output file or folder. Subdirectories are preserved in batch mode. |
+| `-f`, `--format` | `txt` | Output format: `txt` (plain text), `md` (Markdown with ```` ```lang ````), `jsonl` (RAG chunks). |
+| `-j`, `--jobs` | `1` | Number of parallel worker processes for batch extraction. |
+| `--skip-existing` | `False` | Skip files that already have target output. |
 | `-r`, `--recursive` | `False` | Recursively scan folders for `.pdf` files. |
-| `-w`, `--width` | `100` | Paragraph wrap width (`0` = single line per paragraph; code is never wrapped). |
-| `--code-style` | `fence` | Code block format: `fence` (```` ``` ````), `indent` (4 spaces), or `plain`. |
-| `--split-chapters` | `False` | Also outputs individual `.txt` files per chapter into `<name>_chapters/`. |
+| `-w`, `--width` | `100` | Paragraph wrap width (`0` = no wrap; code is never wrapped). |
+| `--code-style` | `fence` | Code block format in plain text: `fence` (```` ``` ````), `indent` (4 spaces), or `plain`. |
+| `--no-detect-lang` | `False` | Disable automatic programming language detection for code fences. |
+| `--no-strip-line-numbers` | `False` | Do not strip leading listing line numbers from code blocks. |
+| `--footnotes` | `section` | Footnote handling: `section` (append at end), `inline` (`[^N]`), or `drop`. |
+| `--no-bom` | `False` | Write UTF-8 without BOM (recommended for Unix pipelines). |
+| `--stdout` | `False` | Output text directly to standard output. |
+| `--split-chapters` | `False` | Also outputs individual files per chapter into `<name>_chapters/`. |
 | `--pages` | *All* | Page range filter (e.g. `1-20`, `35-50,75`). |
 | `--page-markers` | `False` | Inserts `[Page N]` indicators to locate source pages. |
 | `--no-contents` | `False` | Omits the Table of Contents block from the document header. |
 | `--contents-depth` | `3` | Maximum outline depth for the generated Table of Contents header. |
 | `--keep-headers` | `False` | Disables header, footer, and page number removal. |
 | `--columns` | `auto` | Column layout: `auto`, `1` (single column), or `2` (two column). |
-| `--tables` | `False` | Detects grid tables and formats them as ASCII boxes. |
+| `--tables` | `False` | Detects grid tables and formats them as ASCII or Markdown tables. |
 | `--figures` | `False` | Inserts `[Figure]` placeholders where images appear. |
 | `--ocr` | `False` | OCRs image-only pages (requires Tesseract). |
-| `--ocr-lang` | `eng` | Tesseract language code (e.g., `eng`, `eng+deu`, `fra`). |
+| `--ocr-lang` | `eng` | Tesseract language code (e.g., `eng`, `ara`, `eng+deu`). |
 | `--password` | `None` | Password for encrypted PDF files. |
 | `--mark-inline-code` | `False` | Wraps inline monospace code snippets in `` `backticks` ``. |
 | `-q`, `--quiet` | `False` | Suppresses progress output. |
@@ -191,25 +217,35 @@ python3 pdf_book_to_text.py scanned_book.pdf --ocr --ocr-lang eng
 
 ```mermaid
 flowchart TD
-    A["Input PDF File"] --> B["1. Document Profiler\n- Metric Font Classification\n- Margin Band Coordinates"]
-    B --> C["2. Raw Line Extraction\n- Baseline clustering\n- Column ordering"]
-    C --> D["3. Running Header/Footer Filter\n- Dominant margin-band suppression\n- Page number filter"]
-    D --> E["4. Chapter & Outline Engine\n- Bookmark alignment\n- Printed section number retention (3.1, 3.2)"]
-    E --> F["5. Code Reconstruction Engine\n- Coordinate-based indentation\n- Cross-page stitching\n- Quote & dash straightening"]
-    F --> G["6. Paragraph Reflow\n- Dynamic book vocabulary\n- Soft-hyphen resolution"]
-    G --> H["7. Output Formatting\n- Full book .txt\n- Optional chapter files"]
+    A["Input PDF File"] --> B["1. Document Profiler\n• Font classification & metrics\n• Whole-book proportional code profiling\n• Margin band coordinates"]
+    B --> C["2. Raw Line Extraction\n• Character bbox clustering\n• BiDi segment reordering (RTL)\n• Arabic letter connection preservation"]
+    C --> D["3. Running Header/Footer Filter\n• Recurring margin-band suppression\n• Footnote isolation & relocation"]
+    D --> E["4. Chapter & Outline Engine\n• Unicode NFKC bookmark alignment\n• Printed section number retention (3.1, 3.2)"]
+    E --> F["5. Code Reconstruction Engine\n• Indentation coordinate reconstruction\n• Language detection (Python, Bash, SQL, C, JS)\n• Strip listing line numbers\n• Cross-page code stitching"]
+    F --> G["6. Paragraph Reflow\n• Book vocabulary builder\n• Soft-hyphen resolution across page breaks"]
+    G --> H["7. Multi-Format Rendering\n• Plain Text (.txt)\n• GitHub Markdown (.md)\n• RAG Chunks (.jsonl)"]
 ```
 
 ---
 
-## 📊 Benchmarks & Verification
+## 🧪 Testing
 
-Tested on production technical books across different publishing systems:
+The test suite runs automatically with `pytest`:
 
-| Book | Typesetting System | Pages | Extraction Time | Headings | Code Blocks | Output Accuracy |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Think Python** (2nd Ed) | LaTeX / TeX | 244 | **8.0s** | 266 | 636 | 100% clean indentation & chapter splits |
-| **Pro Git** (2nd Ed) | AsciiDoc / Asciidoctor | 501 | **15.2s** | 215 | 884 | Detected `mplus1mn` font; headers removed |
+```bash
+pytest tests/test_extractor.py -v
+```
+
+Tests cover:
+* Box-drawing character preservation (`├──`, `└──`, `│`, `─` ord 0x2500).
+* HTML entity preservation in code listings (`&lt;div&gt;`).
+* Byte-swap repair on corrupt PDF bookmarks.
+* Multilingual and Arabic Unicode NFKC bookmark matching.
+* Programming language heuristics (Python, Bash, SQL, JSON, C).
+* Code listing line-number stripping.
+* Synthetic in-memory PDF extraction across TXT, MD, and JSONL formats.
+* Arabic BiDi punctuation and letter joining.
+* Footnote extraction and table rendering.
 
 ---
 
@@ -226,10 +262,10 @@ Contributions, bug reports, and suggestions are welcome!
 
 ## 📄 License & Commercial Inquiries
 
-Copyright (c) 2026 **AZZANI**.
+Copyright (c) 2026 **AZZANI**. All rights reserved.
 
-* **Free Non-Commercial Use**: This software is free for personal use, education, research, and non-commercial open-source projects under the [PolyForm Noncommercial License](LICENSE).
-* **Commercial Use**: Any use in commercial products, proprietary software, SaaS platforms, or for-profit workflows requires a separate commercial license agreement.
+* **Free Non-Commercial Use**: This software is free for personal use, education, research, and non-commercial open-source projects under the [AZZANI Non-Commercial Dual License](LICENSE).
+* **Commercial Use**: Any use in commercial products, proprietary software, SaaS platforms, closed-source systems, or for-profit workflows requires a separate commercial license agreement.
 * **Commercial Licensing Inquiries**:
   * 📧 Email: [info@7azzani.com](mailto:info@7azzani.com) / [agz97agz97@gmail.com](mailto:agz97agz97@gmail.com)
   * 🐙 GitHub: [@7AZZANI](https://github.com/7AZZANI)
