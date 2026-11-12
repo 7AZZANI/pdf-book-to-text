@@ -53,7 +53,8 @@ def parse_page_ranges(spec: str, total_pages: int) -> list[int]:
 def write_output(path: Path, text: str, opts: Options) -> None:
     """Write output text, using UTF-8 BOM only for .txt unless --no-bom is set."""
     enc = "utf-8-sig" if (not opts.no_bom and opts.format == "txt") else "utf-8"
-    path.write_text(text, encoding=enc, newline="\n")
+    with path.open("w", encoding=enc, newline="\n") as fh:
+        fh.write(text)
 
 
 def collect_pdfs(inputs: list[str], recursive: bool = False) -> list[tuple[Path, Optional[Path]]]:
